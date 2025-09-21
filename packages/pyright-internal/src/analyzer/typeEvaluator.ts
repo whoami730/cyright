@@ -25262,7 +25262,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
 
         // Look for an imported declaration
         let symbol = lookUpSymbolRecursive(node, node.name.value, true)?.symbol;
-        let pxdDecl = symbol?.getDeclarations().find((decl) => decl.type === DeclarationType.Alias);
+        let pxdDecl: Declaration | undefined = symbol?.getDeclarations().find((decl) => decl.type === DeclarationType.Alias);
 
         if (!symbol) {
             // This could be a private symbol
