@@ -24688,6 +24688,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                     checkNodeIsCompileTimeConstant(node.rightExpression),
                 ].every((val) => !!val);
             }
+            case ParseNodeType.UnaryOperation:
+                return checkNodeIsCompileTimeConstant(node.expression);
             case ParseNodeType.Number:
             case ParseNodeType.StringList:
                 return true;

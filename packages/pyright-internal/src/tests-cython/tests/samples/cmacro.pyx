@@ -5,3 +5,5 @@ ELIF SIZE == 0:
     pass
 ELSE:
     pass
+
+DEF ERROR = -1
