@@ -3204,9 +3204,12 @@ export class Parser {
 
         // ! Cython
         // Parse new expression
-        const token = this._peekToken();
-        if (this._consumeTokenIfKeyword(KeywordType.New)) {
-            return CNewNode.create(token, this._parseAssignmentExpression(!allowAssignmentExpression));
+        // const token = this._peekToken();
+        if (this._peekKeywordType() === KeywordType.New) {
+            const newExpr = this._parseNewStatement(!allowAssignmentExpression);
+            if (newExpr) {
+                return newExpr
+            }
         }
 
         const ifExpr = this._parseAssignmentExpression(!allowAssignmentExpression);
@@ -4559,7 +4562,7 @@ export class Parser {
             this._peekTokenType() !== TokenType.NewLine
         ) {
             const argToken = this._peekToken();
-            const nextExpression = this._parseTestExpression(/*allowAssigmentExpression*/ false);
+            const nextExpression = this._parseTestExpression(/*allowAssignmentExpression*/ false);
             if (nextExpression.nodeType !== ParseNodeType.Error) {
                 const arg = ArgumentNode.create(argToken, nextExpression, ArgumentCategory.Simple);
                 leftExpr = CallNode.create(leftExpr, [arg], false);
@@ -7961,5 +7964,28 @@ export class Parser {
         }
         this._tokenIndex = index;
         return { name: undefined, suffix: '' };
+    }
+
+    private _parseNewStatement(disallowAssignmentExpression: boolean) : CNewNode | undefined {
+        const curTokenIndex = this._tokenIndex;
+        const newToken = this._getKeywordToken(KeywordType.New);
+
+        // new is also a soft keyword so we need to be careful and we need
+        // to distinguish between usage as keyword and usage as identifier
+        let smellsLikeNewStatement = false;
+        this._suppressErrors( () => {
+            const assgnExpr = this._parseAssignmentExpression(disallowAssignmentExpression);
+
+            smellsLikeNewStatement = assgnExpr.nodeType !== ParseNodeType.Error;
+
+            // Set the token index back to the start
+            this._tokenIndex = curTokenIndex;
+        });
+
+        if (!smellsLikeNewStatement) {
+            return undefined;
+        }
+
+        return CNewNode.create(newToken, this._parseAssignmentExpression(disallowAssignmentExpression));
     }
 }
