@@ -16,5 +16,3 @@ cdef class Cls(Base):
     cdef int func(self):
 
         return 1
-
-
