@@ -5813,6 +5813,14 @@ export class Parser {
                         }
                         case KeywordType.Cppclass:
                             return this._parseCppClassDef();
+                        case KeywordType.Type: {
+                            // Type is valid python class hence
+                            // same as identifier
+                            node = this._parseCVarDecl();
+                            if (CFunctionNode.isInstance(node)) {
+                                return node;
+                            }
+                        }
                     }
                 }
                 break;
