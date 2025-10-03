@@ -15,3 +15,6 @@ cdef int* func4(int p0):
 
 cdef int* func5(short* p0):
     return <int*> p0
+
+cdef int func7(int p0) except? -1:
+    return -1
