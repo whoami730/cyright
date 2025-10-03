@@ -39,7 +39,7 @@ export const enum TokenType {
     Backtick,
 
     // ! Cython
-    QuestionMark,
+    // QuestionMark,
 }
 
 export const enum NewLineType {
@@ -101,6 +101,7 @@ export const enum OperatorType {
 
     // ! Cython
     Negate, // Only used in cpp operators: "!"
+    QuestionMark, // Used with except and in cast
 }
 
 export const enum OperatorFlags {

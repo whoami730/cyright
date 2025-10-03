@@ -4088,6 +4088,10 @@ export class Parser {
                 if (ptrs.length > 0) {
                     extendRange(typeNode, ptrs[ptrs.length - 1]);
                 }
+
+                // some casts may be checked casts using ? operator which should be consumed
+                this._consumeTokenIfOperator(OperatorType.QuestionMark);
+                
                 const closeToken = this._peekToken() as OperatorToken;
                 if (this._consumeTokenIfOperator(OperatorType.GreaterThan)) {
                     return CCastNode.create(op, typeNode, closeToken, this._parseAtomExpression());
@@ -5813,6 +5817,9 @@ export class Parser {
                         }
                         case KeywordType.Cppclass:
                             return this._parseCppClassDef();
+                        case KeywordType.Type:
+                            // Type is valid python class hence
+                            return this._parseCVarDecl();
                     }
                 }
                 break;
@@ -6582,9 +6589,9 @@ export class Parser {
             const defaultToken = this._peekToken();
             let defaultValue: ExpressionNode | undefined = undefined;
             if (
-                defaultToken.type === TokenType.QuestionMark ||
-                (defaultToken.type === TokenType.Operator &&
-                    (defaultToken as OperatorToken).operatorType === OperatorType.Multiply)
+                defaultToken.type === TokenType.Operator &&
+                ((defaultToken as OperatorToken).operatorType === OperatorType.Multiply ||
+                    (defaultToken as OperatorToken).operatorType === OperatorType.QuestionMark)
             ) {
                 // ! Note these are not allowed in function implementations
                 defaultValue = EllipsisNode.create(this._getNextToken());
@@ -6865,10 +6872,15 @@ export class Parser {
         } else if (this._consumeTokenIfKeyword(KeywordType.Except)) {
             trailType = CBlockTrailType.Except;
             const op = this._peekOperatorType();
-            if (op === OperatorType.Multiply || op === OperatorType.Add) {
+             if (op === OperatorType.Multiply || op === OperatorType.Add) {
                 exceptToken = this._getNextToken();
                 otherTokens.push(exceptToken);
             } else {
+                // except?
+                if (op === OperatorType.QuestionMark) {
+                    exceptToken = this._getNextToken();
+                    otherTokens.push(exceptToken);
+                }
                 expr = this._parseTestExpression(/*allowAssignmentExpression*/ false);
             }
         }

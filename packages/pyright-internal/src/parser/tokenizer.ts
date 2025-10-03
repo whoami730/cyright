@@ -530,7 +530,7 @@ export class Tokenizer {
 
             // ! Cython
             case Char.QuestionMark: {
-                this._tokens.push(Token.create(TokenType.QuestionMark, this._cs.position, 1, this._getComments()));
+                this._tokens.push(OperatorToken.create(this._cs.position, 1, OperatorType.QuestionMark, this._getComments()));
                 break;
             }
 
