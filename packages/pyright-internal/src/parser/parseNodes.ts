@@ -529,6 +529,7 @@ export interface ClassNode extends ParseNodeBase {
     // ! Cython
     structType?: CStructType;
     isCython?: boolean; // If this is a cython cdef class
+    isForwardDeclaration?: boolean;
 }
 
 export namespace ClassNode {
@@ -536,7 +537,8 @@ export namespace ClassNode {
         classToken: Token,
         name: NameNode,
         suite: SuiteNode,
-        typeParameters?: TypeParameterListNode
+        typeParameters?: TypeParameterListNode,
+        isForwardDeclaration?: boolean
     ) {
         const node: ClassNode = {
             start: classToken.start,
@@ -548,6 +550,7 @@ export namespace ClassNode {
             typeParameters,
             arguments: [],
             suite,
+            isForwardDeclaration: isForwardDeclaration
         };
 
         name.parent = node;

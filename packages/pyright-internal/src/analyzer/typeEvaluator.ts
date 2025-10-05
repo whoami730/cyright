@@ -25317,6 +25317,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
     // TODO: Check if Pxd definition can be included. If it cannot then we can also check that the file extension is '.pxd'
     // TODO: Make errors allowed with rules/addendum
     // TODO: Handle cpdef enum and dataclasses?
+    // TODO: Handle & validate class forward declarations.
     function evaluateCythonClassWithPxdDefinition(node: ClassNode) {
         let foundPyStatement = false;
         const addDiag: CClassDiag = (

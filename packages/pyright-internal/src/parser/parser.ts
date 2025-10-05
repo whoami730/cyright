@@ -494,7 +494,8 @@ export class Parser {
                 break;
         }
         if (cythonStatement) {
-            if (CFunctionNode.isInstance(cythonStatement) && cythonStatement.isForwardDeclaration) {
+            if ((CFunctionNode.isInstance(cythonStatement) && cythonStatement.isForwardDeclaration) ||
+                (cythonStatement.nodeType === ParseNodeType.Class) && cythonStatement.isForwardDeclaration){
                 this._expectNewLine();
                 this._consumeTokenIfType(TokenType.NewLine);
             }
@@ -2458,9 +2459,18 @@ export class Parser {
         }
 
         // ! Cython
-        const suite = this._parseSuite(/* isFunction */ false, this._parseOptions.skipFunctionAndClassBody, undefined);
+        let suite: SuiteNode
+        let isForwardDecl = false;
+        if (!isCython || this._peekTokenType() === TokenType.Colon) {
+            suite = this._parseSuite(/* isFunction */ false, this._parseOptions.skipFunctionAndClassBody, undefined);
+        } else {
+            // This is a forward declaration
+            suite = SuiteNode.create(this._peekToken());
+            isForwardDecl = true;
+            this._expectNewLine();
+        }
 
-        const classNode = ClassNode.create(classToken, NameNode.create(nameToken), suite, typeParameters);
+        const classNode = ClassNode.create(classToken, NameNode.create(nameToken), suite, typeParameters, isForwardDecl);
         classNode.isCython = isCython;
         classNode.arguments = argList;
         argList.forEach((arg) => {
@@ -5749,6 +5759,9 @@ export class Parser {
     }
 
     // parse cdef statement; line starting with `cdef`
+    // cdef_stmt: 'cdef' [modifiers] [type] cdef_list
+    // cdef_elem: identifier | identifier '=' right_expr
+    // cdef_list: cdef_elem | cdef_list ',' cdef_elem
     private _parseCDef() {
         const cdefToken = this._getKeywordToken(KeywordType.Cdef);
 
