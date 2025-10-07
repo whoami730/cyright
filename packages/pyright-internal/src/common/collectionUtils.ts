@@ -302,7 +302,7 @@ export function flatten<T>(array: T[][] | readonly (T | readonly T[] | undefined
             }
         }
     }
-    return result;
+    return result as T[];
 }
 
 /**
