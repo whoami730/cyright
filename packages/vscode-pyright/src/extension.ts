@@ -55,19 +55,28 @@ const pythonPathChangedListenerMap = new Map<string, string>();
 const defaultHeapSize = 3072;
 
 export async function activate(context: ExtensionContext) {
-    // See if Pylance is installed. If so, don't activate the Pyright extension.
-    // Doing so will generate "command already registered" errors and redundant
-    // hover text, etc.because the two extensions overlap in functionality.
-    // const pylanceExtension = extensions.getExtension('ms-python.vscode-pylance');
-    // if (pylanceExtension) {
-    //     window.showErrorMessage(
-    //         'Pyright has detected that the Pylance extension is installed. ' +
-    //             'Pylance includes the functionality of Pyright, and running both of ' +
-    //             'these extensions can lead to problems. Pyright will disable itself. ' +
-    //             'Uninstall or disable Pyright to avoid this message.'
-    //     );
-    //     return;
-    // }
+    const OLD_EXTENSION_ID = 'ktnrg45.vscode-cython';
+
+    // Evaluate if older version is installed.
+    const oldExtension = extensions.getExtension(OLD_EXTENSION_ID);
+    if (oldExtension) {
+        const uninstallVscodeCython = 'Uninstall Cython VSCode';
+
+        const result = await window.showWarningMessage(
+            'Cython Enhanced has detected that old extension [Cython VSCode](https://github.com/ktnrg45/vs-code-cython) ' +
+            'is present. This will lead to conflicts and duplicate diagnostics. ' +
+            'Would you like to uninstall Cython VSCode?',
+            uninstallVscodeCython
+        );
+
+        if (result === uninstallVscodeCython) {
+            // Uninstall previous version
+            await commands.executeCommand('workbench.extensions.uninstallExtension', OLD_EXTENSION_ID);
+        }
+        else {
+            return;
+        }
+    }
 
     cancellationStrategy = new FileBasedCancellationStrategy();
 
