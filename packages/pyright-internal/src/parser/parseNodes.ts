@@ -550,7 +550,7 @@ export namespace ClassNode {
             typeParameters,
             arguments: [],
             suite,
-            isForwardDeclaration: isForwardDeclaration
+            isForwardDeclaration: isForwardDeclaration,
         };
 
         name.parent = node;
@@ -990,10 +990,16 @@ export interface TypeParameterNode extends ParseNodeBase {
     boundExpression?: ExpressionNode;
     // ! Cython
     defaultValue?: ExpressionNode | ParameterNode; // Template type parameters can have defaults
+    // TODO : Check if ParameterNode is really required or not?
 }
 
 export namespace TypeParameterNode {
-    export function create(name: NameNode, typeParamCategory: TypeParameterCategory, boundExpression?: ExpressionNode) {
+    export function create(
+        name: NameNode,
+        typeParamCategory: TypeParameterCategory,
+        boundExpression?: ExpressionNode,
+        defaultExpression?: ExpressionNode
+    ) {
         const node: TypeParameterNode = {
             start: name.start,
             length: name.length,
@@ -1002,6 +1008,7 @@ export namespace TypeParameterNode {
             name,
             typeParamCategory,
             boundExpression,
+            defaultValue: defaultExpression,
         };
 
         name.parent = node;
@@ -1009,6 +1016,11 @@ export namespace TypeParameterNode {
         if (boundExpression) {
             boundExpression.parent = node;
             extendRange(node, boundExpression);
+        }
+
+        if (defaultExpression) {
+            defaultExpression.parent = node;
+            extendRange(node, defaultExpression);
         }
 
         return node;

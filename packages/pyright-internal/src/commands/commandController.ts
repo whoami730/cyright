@@ -12,6 +12,7 @@ import { LanguageServerInterface } from '../languageServerBase';
 import { Commands } from './commands';
 import { CreateCythonTypeStubCommand } from './createCythonTypeStub';
 import { CreateTypeStubCommand } from './createTypeStub';
+import { DumpFileDebugInfoCommand } from './dumpFileDebugInfoCommand';
 import { QuickActionCommand } from './quickActionCommand';
 import { RestartServerCommand } from './restartServer';
 
@@ -23,6 +24,8 @@ export class CommandController implements ServerCommand {
     private _createStub: CreateTypeStubCommand;
     private _restartServer: RestartServerCommand;
     private _quickAction: QuickActionCommand;
+    private _dumpFileDebugInfo: DumpFileDebugInfoCommand;
+
     // ! Cython
     private _createCythonStub: CreateCythonTypeStubCommand;
 
@@ -30,6 +33,8 @@ export class CommandController implements ServerCommand {
         this._createStub = new CreateTypeStubCommand(ls);
         this._restartServer = new RestartServerCommand(ls);
         this._quickAction = new QuickActionCommand(ls);
+        this._dumpFileDebugInfo = new DumpFileDebugInfoCommand(ls);
+
         // ! Cython
         this._createCythonStub = new CreateCythonTypeStubCommand(ls);
     }
@@ -47,6 +52,10 @@ export class CommandController implements ServerCommand {
 
             case Commands.restartServer: {
                 return this._restartServer.execute(cmdParams);
+            }
+
+            case Commands.dumpFileDebugInfo: {
+                return this._dumpFileDebugInfo.execute(cmdParams, token);
             }
 
             // ! Cython

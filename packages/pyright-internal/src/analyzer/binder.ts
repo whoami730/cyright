@@ -109,6 +109,7 @@ import {
     FlowWildcardImport,
     getUniqueFlowNodeId,
     isCodeFlowSupportedForReference,
+    wildcardImportReferenceKey,
 } from './codeFlowTypes';
 import {
     AliasDeclaration,
@@ -752,6 +753,10 @@ export class Binder extends ParseTreeWalker {
             if (param.boundExpression) {
                 this.walk(param.boundExpression);
             }
+
+            if (param.defaultValue) {
+                this.walk(param.defaultValue);
+            }
         });
 
         node.parameters.forEach((param) => {
@@ -851,7 +856,15 @@ export class Binder extends ParseTreeWalker {
             }
         }
 
-        this.walk(node.rightExpression);
+        // If this is an annotated variable assignment within a class body,
+        // we need to evaluate the type annotation first.
+        const bindVariableBeforeRhsEvaluation =
+            node.leftExpression.nodeType === ParseNodeType.TypeAnnotation &&
+            ParseTreeUtils.getEnclosingClass(node, /* stopAtFunction */ true) !== undefined;
+
+        if (!bindVariableBeforeRhsEvaluation) {
+            this.walk(node.rightExpression);
+        }
 
         let isPossibleTypeAlias = true;
         if (ParseTreeUtils.getEnclosingFunction(node)) {
@@ -872,6 +885,10 @@ export class Binder extends ParseTreeWalker {
 
         // If we didn't create assignment target flow nodes above, do so now.
         this._createAssignmentTargetFlowNodes(node.leftExpression, /* walkTargets */ true, /* unbound */ false);
+
+        if (bindVariableBeforeRhsEvaluation) {
+            this.walk(node.rightExpression);
+        }
 
         // Is this an assignment to dunder all?
         if (this._currentScope.type === ScopeType.Module) {
@@ -1100,13 +1117,7 @@ export class Binder extends ParseTreeWalker {
             return false;
         }
 
-        // We normally want to walk the type annotation first so it is "before"
-        // the target in the code flow graph, but this is reversed for class variables
-        // declared within a class body.
-        const evaluateAnnotationAfterAssignment = ParseTreeUtils.getEnclosingClass(node, /* stopAtFunction */ true);
-        if (!evaluateAnnotationAfterAssignment) {
-            this.walk(node.typeAnnotation);
-        }
+        this.walk(node.typeAnnotation);
 
         this._createVariableAnnotationFlowNode();
 
@@ -1125,12 +1136,6 @@ export class Binder extends ParseTreeWalker {
             });
         }
 
-        this.walk(node.valueExpression);
-
-        if (evaluateAnnotationAfterAssignment) {
-            this.walk(node.typeAnnotation);
-        }
-
         // ! Cython
         // Check if this is a cdef annotation.
         // These are valid declarations even without assignment and should not be marked unbound
@@ -1143,6 +1148,8 @@ export class Binder extends ParseTreeWalker {
                 symbol.setInitiallyBound();
             }
         }
+
+        this.walk(node.valueExpression);
 
         return false;
     }
@@ -1753,6 +1760,10 @@ export class Binder extends ParseTreeWalker {
             if (importInfo) {
                 const names: string[] = [];
 
+                // Note that this scope uses a wildcard import, so we cannot shortcut
+                // any code flow checks. All expressions are potentially in play.
+                this._currentScopeCodeFlowExpressions?.add(wildcardImportReferenceKey);
+
                 const lookupInfo = this._fileInfo.importLookup(resolvedPath);
                 if (lookupInfo) {
                     const wildcardNames = this._getWildcardImportNames(lookupInfo);
@@ -1825,6 +1836,7 @@ export class Binder extends ParseTreeWalker {
                                         };
 
                                         localSymbol.addDeclaration(aliasDecl);
+                                        names.push(name);
                                     }
                                 }
                             }
@@ -2881,7 +2893,15 @@ export class Binder extends ParseTreeWalker {
         }
 
         const expressionList: CodeFlowReferenceExpressionNode[] = [];
-        if (!this._isNarrowingExpression(expression, expressionList)) {
+        if (
+            !this._isNarrowingExpression(
+                expression,
+                expressionList,
+                /* filterForNeverNarrowing */ (flags &
+                    (FlowFlags.TrueNeverCondition | FlowFlags.FalseNeverCondition)) !==
+                    0
+            )
+        ) {
             return antecedent;
         }
 
@@ -2956,6 +2976,17 @@ export class Binder extends ParseTreeWalker {
 
                 if (isCodeFlowSupportedForReference(expression)) {
                     expressionList.push(expression);
+
+                    if (!filterForNeverNarrowing) {
+                        // If the expression is a member access expression, add its
+                        // leftExpression to the expression list because that expression
+                        // can be narrowed based on the attribute type.
+                        if (expression.nodeType === ParseNodeType.MemberAccess) {
+                            if (isCodeFlowSupportedForReference(expression.leftExpression)) {
+                                expressionList.push(expression.leftExpression);
+                            }
+                        }
+                    }
                     return true;
                 }
 
@@ -3813,17 +3844,24 @@ export class Binder extends ParseTreeWalker {
         importAliases: string[],
         symbolAliases: Map<string, string>
     ) {
-        if (typeAnnotation.nodeType === ParseNodeType.Name) {
-            const alias = symbolAliases.get(typeAnnotation.value);
+        let annotationNode = typeAnnotation;
+
+        // Is this a quoted annotation?
+        if (annotationNode.nodeType === ParseNodeType.StringList && annotationNode.typeAnnotation) {
+            annotationNode = annotationNode.typeAnnotation;
+        }
+
+        if (annotationNode.nodeType === ParseNodeType.Name) {
+            const alias = symbolAliases.get(annotationNode.value);
             if (alias === name) {
                 return true;
             }
-        } else if (typeAnnotation.nodeType === ParseNodeType.MemberAccess) {
+        } else if (annotationNode.nodeType === ParseNodeType.MemberAccess) {
             if (
-                typeAnnotation.leftExpression.nodeType === ParseNodeType.Name &&
-                typeAnnotation.memberName.value === name
+                annotationNode.leftExpression.nodeType === ParseNodeType.Name &&
+                annotationNode.memberName.value === name
             ) {
-                const baseName = typeAnnotation.leftExpression.value;
+                const baseName = annotationNode.leftExpression.value;
                 return importAliases.some((alias) => alias === baseName);
             }
         }
@@ -3957,6 +3995,11 @@ export class Binder extends ParseTreeWalker {
         let classVarTypeNode: ExpressionNode | undefined;
 
         while (typeAnnotation) {
+            // Is this a quoted annotation?
+            if (typeAnnotation.nodeType === ParseNodeType.StringList && typeAnnotation.typeAnnotation) {
+                typeAnnotation = typeAnnotation.typeAnnotation;
+            }
+
             if (
                 typeAnnotation.nodeType === ParseNodeType.Index &&
                 typeAnnotation.items.length > 0 &&
@@ -4143,29 +4186,29 @@ export class Binder extends ParseTreeWalker {
         }
 
         const assignedNameNode = annotationNode.valueExpression;
-        const specialTypes: Map<string, boolean> = new Map([
-            ['Tuple', true],
-            ['Generic', true],
-            ['Protocol', true],
-            ['Callable', true],
-            ['Type', true],
-            ['ClassVar', true],
-            ['Final', true],
-            ['Literal', true],
-            ['TypedDict', true],
-            ['Union', true],
-            ['Optional', true],
-            ['Annotated', true],
-            ['TypeAlias', true],
-            ['OrderedDict', true],
-            ['Concatenate', true],
-            ['TypeGuard', true],
-            ['StrictTypeGuard', true],
-            ['Unpack', true],
-            ['Self', true],
-            ['NoReturn', true],
-            ['Never', true],
-            ['LiteralString', true],
+        const specialTypes: Set<string> = new Set([
+            'Tuple',
+            'Generic',
+            'Protocol',
+            'Callable',
+            'Type',
+            'ClassVar',
+            'Final',
+            'Literal',
+            'TypedDict',
+            'Union',
+            'Optional',
+            'Annotated',
+            'TypeAlias',
+            'OrderedDict',
+            'Concatenate',
+            'TypeGuard',
+            'StrictTypeGuard',
+            'Unpack',
+            'Self',
+            'NoReturn',
+            'Never',
+            'LiteralString',
         ]);
 
         const assignedName = assignedNameNode.value;

@@ -23,6 +23,8 @@ def model_field(
     field_specifiers=(ModelField, model_field),
 )
 class ModelMeta(type):
+    not_a_field: str
+
     def __init_subclass__(
         cls,
         *,
@@ -43,6 +45,8 @@ class Customer1(ModelBase, frozen=True):
     name2: str = model_field(alias="other_name", default="None")
 
 
+# This should generate an error because a non-frozen class cannot
+# derive from a frozen one.
 class Customer1Subclass(Customer1, frozen=False):
     salary: float = model_field()
 

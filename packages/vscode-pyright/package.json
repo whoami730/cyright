@@ -2,7 +2,7 @@
     "name": "vscode-pyright",
     "displayName": "Pyright",
     "description": "VS Code static type checking for Python",
-    "version": "1.1.270",
+    "version": "1.1.280",
     "private": true,
     "license": "MIT",
     "author": {
@@ -51,6 +51,36 @@
                 "command": "pyright.restartserver",
                 "title": "Restart Server",
                 "category": "Pyright"
+            },
+            {
+                "command": "pyright.dumpTokens",
+                "title": "Dump token streams ...",
+                "category": "Pyright",
+                "enablement": "editorLangId == python && pyright.development"
+            },
+            {
+                "command": "pyright.dumpNodes",
+                "title": "Dump parse tree ...",
+                "category": "Pyright",
+                "enablement": "editorLangId == python && pyright.development"
+            },
+            {
+                "command": "pyright.dumpTypes",
+                "title": "Dump type info ...",
+                "category": "Pyright",
+                "enablement": "editorLangId == python && pyright.development"
+            },
+            {
+                "command": "pyright.dumpCachedTypes",
+                "title": "Dump cached type info ...",
+                "category": "Pyright",
+                "enablement": "editorLangId == python && pyright.development"
+            },
+            {
+                "command": "pyright.dumpCodeFlowGraph",
+                "title": "Dump code flow graph for node ...",
+                "category": "Pyright",
+                "enablement": "editorLangId == python && pyright.development"
             }
         ],
         "menus": {
@@ -60,6 +90,28 @@
                     "title": "Pyright: Organize Imports",
                     "group": "Pyright",
                     "when": "editorLangId == python"
+                }
+            ],
+            "commandPalette": [
+                {
+                    "command": "pyright.dumpTokens",
+                    "when": "editorLangId == python && pyright.development"
+                },
+                {
+                    "command": "pyright.dumpNodes",
+                    "when": "editorLangId == python && pyright.development"
+                },
+                {
+                    "command": "pyright.dumpTypes",
+                    "when": "editorLangId == python && pyright.development"
+                },
+                {
+                    "command": "pyright.dumpCachedTypes",
+                    "when": "editorLangId == python && pyright.development"
+                },
+                {
+                    "command": "pyright.dumpCodeFlowGraph",
+                    "when": "editorLangId == python && pyright.development"
                 }
             ]
         },
@@ -776,6 +828,17 @@
                         "reportMatchNotExhaustive": {
                             "type": "string",
                             "description": "Diagnostics for 'match' statements that do not exhaustively match all possible values.",
+                            "default": "none",
+                            "enum": [
+                                "none",
+                                "information",
+                                "warning",
+                                "error"
+                            ]
+                        },
+                        "reportShadowedImports": {
+                            "type": "string",
+                            "description": "Diagnostics for files that are overriding a module in the stdlib.",
                             "default": "none",
                             "enum": [
                                 "none",

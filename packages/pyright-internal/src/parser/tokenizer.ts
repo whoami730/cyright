@@ -313,7 +313,7 @@ export class Tokenizer {
         }
 
         // Insert any implied dedent tokens.
-        this._setIndent(0, 0, /* isSpacePresent */ false, /* isTabPresent */ false);
+        this._setIndent(this._cs.position, 0, 0, /* isSpacePresent */ false, /* isTabPresent */ false);
 
         // Add a final end-of-stream token to make parsing easier.
         this._tokens.push(Token.create(TokenType.EndOfStream, this._cs.position, 0, this._getComments()));
@@ -414,11 +414,23 @@ export class Tokenizer {
             return true;
         }
 
-        if (this._ipythonMode && this._isIPythonMagics()) {
-            this._handleIPythonMagics(
-                this._cs.currentChar === Char.Percent ? CommentType.IPythonMagic : CommentType.IPythonShellEscape
-            );
-            return true;
+        if (this._ipythonMode) {
+            const kind = this._getIPythonMagicsKind();
+            if (kind === 'line') {
+                this._handleIPythonMagics(
+                    this._cs.currentChar === Char.Percent ? CommentType.IPythonMagic : CommentType.IPythonShellEscape
+                );
+                return true;
+            }
+
+            if (kind === 'cell') {
+                this._handleIPythonMagics(
+                    this._cs.currentChar === Char.Percent
+                        ? CommentType.IPythonCellMagic
+                        : CommentType.IPythonCellShellEscape
+                );
+                return true;
+            }
         }
 
         switch (this._cs.currentChar) {
@@ -530,7 +542,9 @@ export class Tokenizer {
 
             // ! Cython
             case Char.QuestionMark: {
-                this._tokens.push(OperatorToken.create(this._cs.position, 1, OperatorType.QuestionMark, this._getComments()));
+                this._tokens.push(
+                    OperatorToken.create(this._cs.position, 1, OperatorType.QuestionMark, this._getComments())
+                );
                 break;
             }
 
@@ -597,6 +611,8 @@ export class Tokenizer {
         let isTabPresent = false;
         let isSpacePresent = false;
 
+        const startOffset = this._cs.position;
+
         while (!this._cs.isEndOfStream()) {
             switch (this._cs.currentChar) {
                 case Char.Space:
@@ -625,7 +641,7 @@ export class Tokenizer {
 
                 default:
                     // Non-blank line. Set the current indent level.
-                    this._setIndent(tab1Spaces, tab8Spaces, isSpacePresent, isTabPresent);
+                    this._setIndent(startOffset, tab1Spaces, tab8Spaces, isSpacePresent, isTabPresent);
                     return;
 
                 case Char.Hash:
@@ -640,7 +656,13 @@ export class Tokenizer {
     // The caller must specify two space count values. The first assumes
     // that tabs are translated into one-space tab stops. The second assumes
     // that tabs are translated into eight-space tab stops.
-    private _setIndent(tab1Spaces: number, tab8Spaces: number, isSpacePresent: boolean, isTabPresent: boolean) {
+    private _setIndent(
+        startOffset: number,
+        tab1Spaces: number,
+        tab8Spaces: number,
+        isSpacePresent: boolean,
+        isTabPresent: boolean
+    ) {
         // Indentations are ignored within a parenthesized clause.
         if (this._parenDepth > 0) {
             return;
@@ -661,7 +683,7 @@ export class Tokenizer {
                     isSpacePresent,
                     isTabPresent,
                 });
-                this._tokens.push(IndentToken.create(this._cs.position, 0, tab8Spaces, false, this._getComments()));
+                this._tokens.push(IndentToken.create(startOffset, tab1Spaces, tab8Spaces, false, this._getComments()));
             }
         } else {
             const prevTabInfo = this._indentAmounts[this._indentAmounts.length - 1];
@@ -688,7 +710,7 @@ export class Tokenizer {
                 });
 
                 this._tokens.push(
-                    IndentToken.create(this._cs.position, 0, tab8Spaces, isIndentAmbiguous, this._getComments())
+                    IndentToken.create(startOffset, tab1Spaces, tab8Spaces, isIndentAmbiguous, this._getComments())
                 );
             } else if (prevTabInfo.tab8Spaces === tab8Spaces) {
                 // The Python spec says that if there is ambiguity about how tabs should
@@ -696,7 +718,9 @@ export class Tokenizer {
                 // spaces, it should be an error. We'll record this condition in the token
                 // so the parser can later report it.
                 if ((prevTabInfo.isSpacePresent && isTabPresent) || (prevTabInfo.isTabPresent && isSpacePresent)) {
-                    this._tokens.push(IndentToken.create(this._cs.position, 0, tab8Spaces, true, this._getComments()));
+                    this._tokens.push(
+                        IndentToken.create(startOffset, tab1Spaces, tab8Spaces, true, this._getComments())
+                    );
                 }
             } else {
                 // The Python spec says that if there is ambiguity about how tabs should
@@ -890,7 +914,7 @@ export class Tokenizer {
                 let isImaginary = false;
 
                 const bigIntValue = BigInt(simpleIntText);
-                if (!isFinite(intValue) || BigInt(intValue) !== bigIntValue) {
+                if (!isFinite(intValue) || bigIntValue > Number.MAX_SAFE_INTEGER) {
                     intValue = bigIntValue;
                 }
 
@@ -1095,12 +1119,27 @@ export class Tokenizer {
         return prevComments;
     }
 
-    private _isIPythonMagics() {
+    private _getIPythonMagicsKind(): 'line' | 'cell' | undefined {
+        if (!isMagicChar(this._cs.currentChar)) {
+            return undefined;
+        }
+
         const prevToken = this._tokens.length > 0 ? this._tokens[this._tokens.length - 1] : undefined;
-        return (
-            (prevToken === undefined || isWhitespace(prevToken)) &&
-            (this._cs.currentChar === Char.Percent || this._cs.currentChar === Char.ExclamationMark)
-        );
+        if (prevToken !== undefined && !isWhitespace(prevToken)) {
+            return undefined;
+        }
+
+        if (this._cs.nextChar === this._cs.currentChar) {
+            // Eat up next magic char.
+            this._cs.moveNext();
+            return 'cell';
+        }
+
+        return 'line';
+
+        function isMagicChar(ch: number) {
+            return ch === Char.Percent || ch === Char.ExclamationMark;
+        }
     }
 
     private _handleIPythonMagics(type: CommentType): void {
@@ -1110,16 +1149,19 @@ export class Tokenizer {
         do {
             this._cs.skipToEol();
 
-            const length = this._cs.position - begin;
-            const value = this._cs.getText().substring(begin, begin + length);
+            if (type === CommentType.IPythonMagic || type === CommentType.IPythonShellEscape) {
+                const length = this._cs.position - begin;
+                const value = this._cs.getText().substring(begin, begin + length);
 
-            // is it multiline magics?
-            // %magic command \
-            //        next arguments
-            if (!value.match(/\\\s*$/)) {
-                break;
+                // is it multiline magics?
+                // %magic command \
+                //        next arguments
+                if (!value.match(/\\\s*$/)) {
+                    break;
+                }
             }
 
+            this._cs.moveNext();
             begin = this._cs.position + 1;
         } while (!this._cs.isEndOfStream());
 
@@ -1427,7 +1469,6 @@ export class Tokenizer {
     }
 }
 
-
 // ! Cython
 
 /* Supported operators (Cython/Compiler/Parsing.py):
@@ -1438,16 +1479,16 @@ export class Tokenizer {
     'bool',
 */
 export const enum CppOperatorSymbol {
-    Add= '+',
-    Subtract='-',
-    Multiply='*',
-    Divide='/',
+    Add = '+',
+    Subtract = '-',
+    Multiply = '*',
+    Divide = '/',
     Mod = '%',
-    IAdd= '++',
-    ISubtract='--',
+    IAdd = '++',
+    ISubtract = '--',
     BitwiseInvert = '~',
     BitwiseOr = '|',
-    BitwiseAnd= '&',
+    BitwiseAnd = '&',
     BitwiseXor = '^',
     RightShift = '>>',
     LeftShift = '<<',

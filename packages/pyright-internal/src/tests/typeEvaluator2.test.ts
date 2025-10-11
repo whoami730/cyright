@@ -60,6 +60,12 @@ test('CallbackProtocol8', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('CallbackProtocol9', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['callbackProtocol9.py']);
+
+    TestUtils.validateResults(analysisResults, 2);
+});
+
 test('Assignment1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['assignment1.py']);
 
@@ -960,6 +966,24 @@ test('GenericTypes96', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('GenericTypes97', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['genericTypes97.py']);
+
+    TestUtils.validateResults(analysisResults, 8);
+});
+
+test('GenericTypes98', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['genericTypes98.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('GenericTypes99', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['genericTypes99.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('Protocol1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['protocol1.py']);
 
@@ -981,7 +1005,7 @@ test('Protocol3', () => {
 test('Protocol4', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['protocol4.py']);
 
-    TestUtils.validateResults(analysisResults, 2);
+    TestUtils.validateResults(analysisResults, 3);
 });
 
 test('Protocol5', () => {
@@ -1279,7 +1303,7 @@ test('TypedDict17', () => {
 test('TypedDict18', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typedDict18.py']);
 
-    TestUtils.validateResults(analysisResults, 2);
+    TestUtils.validateResults(analysisResults, 3);
 });
 
 test('TypedDict19', () => {

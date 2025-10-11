@@ -261,6 +261,14 @@ export class SourceFile {
         this._ipythonMode = ipythonMode;
     }
 
+    getRealFilePath(): string {
+        return this._realFilePath;
+    }
+
+    getIPythonMode(): IPythonMode {
+        return this._ipythonMode;
+    }
+
     getFilePath(): string {
         return this._filePath;
     }
@@ -880,7 +888,7 @@ export class SourceFile {
                     text: '',
                     parseTree: ModuleNode.create({ start: 0, length: 0 }),
                     importedModules: [],
-                    futureImports: new Map<string, boolean>(),
+                    futureImports: new Set<string>(),
                     tokenizerOutput: {
                         tokens: new TextRangeCollection<Token>([]),
                         lines: new TextRangeCollection<TextRange>([]),
@@ -967,6 +975,19 @@ export class SourceFile {
             evaluator,
             token
         );
+    }
+
+    getDefinitionsForNode(
+        sourceMapper: SourceMapper,
+        node: NameNode,
+        evaluator: TypeEvaluator
+    ): DocumentRange[] | undefined {
+        // If we have no completed analysis job, there's nothing to do.
+        if (!this._parseResults) {
+            return undefined;
+        }
+
+        return DefinitionProvider.getDefinitionsForNode(sourceMapper, node, DefinitionFilter.All, evaluator);
     }
 
     getTypeDefinitionsForPosition(
@@ -1238,7 +1259,12 @@ export class SourceFile {
         return performQuickAction(command, args, this._parseResults, token);
     }
 
-    bind(configOptions: ConfigOptions, importLookup: ImportLookup, builtinsScope: Scope | undefined) {
+    bind(
+        configOptions: ConfigOptions,
+        importLookup: ImportLookup,
+        builtinsScope: Scope | undefined,
+        futureImports: Set<string>
+    ) {
         assert(!this.isParseRequired(), 'Bind called before parsing');
         assert(this.isBindingRequired(), 'Bind called unnecessarily');
         assert(!this._isBindingInProgress, 'Bind called while binding in progress');
@@ -1254,7 +1280,8 @@ export class SourceFile {
                         configOptions,
                         this._parseResults!.text,
                         importLookup,
-                        builtinsScope
+                        builtinsScope,
+                        futureImports
                     );
                     AnalyzerNodeInfo.setFileInfo(this._parseResults!.parseTree, fileInfo);
 
@@ -1304,7 +1331,13 @@ export class SourceFile {
         });
     }
 
-    check(importResolver: ImportResolver, evaluator: TypeEvaluator) {
+    check(
+        importResolver: ImportResolver,
+        evaluator: TypeEvaluator,
+        execEnv: ExecutionEnvironment,
+        sourceMapper: SourceMapper,
+        isUserCode: (p: string) => boolean
+    ) {
         assert(!this.isParseRequired(), 'Check called before parsing');
         assert(!this.isBindingRequired(), 'Check called before binding');
         assert(!this._isBindingInProgress, 'Check called while binding in progress');
@@ -1315,7 +1348,7 @@ export class SourceFile {
             try {
                 timingStats.typeCheckerTime.timeOperation(() => {
                     const checkDuration = new Duration();
-                    const checker = new Checker(importResolver, evaluator, this._parseResults!.parseTree);
+                    const checker = new Checker(importResolver, evaluator, this._parseResults!.parseTree, sourceMapper);
                     checker.check();
                     this._isCheckingNeeded = false;
 
@@ -1357,21 +1390,22 @@ export class SourceFile {
     }
 
     test_enableIPythonMode(enable: boolean) {
-        this._ipythonMode = enable ? IPythonMode.ConcatDoc : IPythonMode.None;
+        this._ipythonMode = enable ? IPythonMode.CellDocs : IPythonMode.None;
     }
 
     private _buildFileInfo(
         configOptions: ConfigOptions,
         fileContents: string,
         importLookup: ImportLookup,
-        builtinsScope?: Scope
+        builtinsScope: Scope | undefined,
+        futureImports: Set<string>
     ) {
         assert(this._parseResults !== undefined, 'Parse results not available');
         const analysisDiagnostics = new TextRangeDiagnosticSink(this._parseResults!.tokenizerOutput.lines);
 
         const fileInfo: AnalyzerFileInfo = {
             importLookup,
-            futureImports: this._parseResults!.futureImports,
+            futureImports,
             builtinsScope,
             diagnosticSink: analysisDiagnostics,
             executionEnvironment: configOptions.findExecEnvironment(this._filePath),

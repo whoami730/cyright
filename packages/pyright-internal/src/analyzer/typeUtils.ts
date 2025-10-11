@@ -58,6 +58,7 @@ import {
     TypeVarType,
     UnionType,
     UnknownType,
+    Variance,
     WildcardTypeVarScopeId,
 } from './types';
 import { TypeVarContext } from './typeVarContext';
@@ -284,11 +285,14 @@ export function getParameterListDetails(type: FunctionType): ParameterListDetail
         param: FunctionParameter,
         index: number,
         typeOverride?: Type,
-        defaultArgTypeOverride?: Type
+        defaultArgTypeOverride?: Type,
+        sourceOverride?: ParameterSource
     ) => {
         if (param.name) {
             let source: ParameterSource;
-            if (param.category === ParameterCategory.VarArgList) {
+            if (sourceOverride !== undefined) {
+                source = sourceOverride;
+            } else if (param.category === ParameterCategory.VarArgList) {
                 source = ParameterSource.PositionOnly;
             } else if (sawKeywordOnlySeparator) {
                 source = ParameterSource.KeywordOnly;
@@ -313,7 +317,9 @@ export function getParameterListDetails(type: FunctionType): ParameterListDetail
             // If this is an unpacked tuple, expand the entries.
             const paramType = FunctionType.getEffectiveParameterType(type, index);
             if (param.name && isUnpackedClass(paramType) && paramType.tupleTypeArguments) {
-                paramType.tupleTypeArguments.forEach((tupleArg, index) => {
+                const addToPositionalOnly = index < result.positionOnlyParamCount;
+
+                paramType.tupleTypeArguments.forEach((tupleArg, tupleIndex) => {
                     const category =
                         isVariadicTypeVar(tupleArg.type) || tupleArg.isUnbounded
                             ? ParameterCategory.VarArgList
@@ -330,15 +336,34 @@ export function getParameterListDetails(type: FunctionType): ParameterListDetail
                     addVirtualParameter(
                         {
                             category,
-                            name: `${param.name}[${index.toString()}]`,
+                            name: `${param.name}[${tupleIndex.toString()}]`,
                             isNameSynthesized: true,
                             type: tupleArg.type,
                             hasDeclaredType: true,
                         },
                         index,
-                        tupleArg.type
+                        tupleArg.type,
+                        /* defaultArgTypeOverride */ undefined,
+                        ParameterSource.PositionOnly
                     );
+
+                    if (category === ParameterCategory.Simple) {
+                        result.positionParamCount++;
+                    }
+
+                    if (tupleIndex > 0 && addToPositionalOnly) {
+                        result.positionOnlyParamCount++;
+                    }
                 });
+
+                // Normally, a VarArgList parameter (either named or as an unnamed separator)
+                // would signify the start of keyword-only parameters. However, we can construct
+                // callable signatures that defy this rule by using Callable and TypeVarTuples
+                // or unpacked tuples.
+                if (!sawKeywordOnlySeparator && (positionOnlyIndex < 0 || index >= positionOnlyIndex)) {
+                    result.firstKeywordOnlyIndex = result.params.length;
+                    sawKeywordOnlySeparator = true;
+                }
             } else {
                 if (param.name && result.argsIndex === undefined) {
                     result.argsIndex = result.params.length;
@@ -365,23 +390,28 @@ export function getParameterListDetails(type: FunctionType): ParameterListDetail
         } else if (param.category === ParameterCategory.VarArgDictionary) {
             sawKeywordOnlySeparator = true;
 
+            const paramType = FunctionType.getEffectiveParameterType(type, index);
+
             // Is this an unpacked TypedDict? If so, expand the entries.
-            if (isClassInstance(param.type) && isUnpackedClass(param.type) && param.type.details.typedDictEntries) {
+            if (isClassInstance(paramType) && isUnpackedClass(paramType) && paramType.details.typedDictEntries) {
                 if (result.firstKeywordOnlyIndex === undefined) {
                     result.firstKeywordOnlyIndex = result.params.length;
                 }
 
-                param.type.details.typedDictEntries.forEach((entry, name) => {
+                const typedDictType = paramType;
+                paramType.details.typedDictEntries.forEach((entry, name) => {
+                    const specializedParamType = partiallySpecializeType(entry.valueType, typedDictType);
+
                     addVirtualParameter(
                         {
                             category: ParameterCategory.Simple,
                             name,
-                            type: entry.valueType,
+                            type: specializedParamType,
                             hasDeclaredType: true,
                             hasDefault: !entry.isRequired,
                         },
                         index,
-                        entry.valueType
+                        specializedParamType
                     );
                 });
 
@@ -766,11 +796,7 @@ export function getTypeCondition(type: Type): TypeCondition[] | undefined {
 // Indicates whether the specified type is a recursive type alias
 // placeholder that has not yet been resolved.
 export function isTypeAliasPlaceholder(type: Type): type is TypeVarType {
-    if (!isTypeVar(type)) {
-        return false;
-    }
-
-    return !!type.details.recursiveTypeAliasName && !type.details.boundType;
+    return isTypeVar(type) && TypeVarType.isTypeAliasPlaceholder(type);
 }
 
 // Determines whether the type alias placeholder is used directly
@@ -816,6 +842,10 @@ export function transformPossibleRecursiveTypeAlias(type: Type | undefined): Typ
                 getTypeVarScopeId(type)
             );
             return applySolvedTypeVars(unspecializedType, typeVarContext);
+        }
+
+        if (isUnion(type) && type.includesTypeAliasPlaceholder) {
+            return mapSubtypes(type, (subtype) => transformPossibleRecursiveTypeAlias(subtype));
         }
     }
 
@@ -1107,7 +1137,6 @@ export function applySolvedTypeVars(
 // type variables that are scoped to the appropriate context.
 export function transformExpectedTypeForConstructor(
     expectedType: Type,
-    typeVarContext: TypeVarContext,
     liveTypeVarScopes: TypeVarScopeId[]
 ): Type | undefined {
     const isTypeVarLive = (typeVar: TypeVarType) => liveTypeVarScopes.some((scopeId) => typeVar.scopeId === scopeId);
@@ -1123,7 +1152,7 @@ export function transformExpectedTypeForConstructor(
         return undefined;
     }
 
-    const transformer = new ExpectedConstructorTypeTransformer(typeVarContext, liveTypeVarScopes);
+    const transformer = new ExpectedConstructorTypeTransformer(liveTypeVarScopes);
     return transformer.apply(expectedType);
 }
 
@@ -2078,9 +2107,9 @@ export function explodeGenericClass(classType: ClassType) {
 
 // If the type is a union of same-sized tuples, these are combined into
 // a single tuple with that size. Otherwise, returns undefined.
-export function combineSameSizedTuples(type: Type, tupleType: Type | undefined) {
+export function combineSameSizedTuples(type: Type, tupleType: Type | undefined): Type {
     if (!tupleType || !isInstantiableClass(tupleType) || isUnboundedTupleClass(tupleType)) {
-        return undefined;
+        return type;
     }
 
     let tupleEntries: Type[][] | undefined;
@@ -2122,7 +2151,7 @@ export function combineSameSizedTuples(type: Type, tupleType: Type | undefined) 
     });
 
     if (!isValid || !tupleEntries) {
-        return undefined;
+        return type;
     }
 
     return convertToInstance(
@@ -2144,7 +2173,16 @@ export function specializeTupleClass(
     isTypeArgumentExplicit = true,
     isUnpackedTuple = false
 ): ClassType {
-    let combinedTupleType = combineTypes(typeArgs.map((t) => t.type));
+    let combinedTupleType = combineTypes(
+        typeArgs.map((t) => {
+            if (isTypeVar(t.type) && t.type.isVariadicUnpacked && !t.type.isVariadicInUnion) {
+                // Treat the unpacked TypeVarTuple as a union.
+                return TypeVarType.cloneForUnpacked(t.type, /* isInUnion */ true);
+            }
+
+            return t.type;
+        })
+    );
 
     // An empty tuple has an effective type of Any.
     if (isNever(combinedTupleType)) {
@@ -2236,10 +2274,22 @@ export function getGeneratorTypeArgs(returnType: Type): Type[] | undefined {
 
 export function requiresTypeArguments(classType: ClassType) {
     if (classType.details.typeParameters.length > 0) {
+        const firstTypeParam = classType.details.typeParameters[0];
+
         // If there are type parameters, type arguments are needed.
         // The exception is if type parameters have been synthesized
         // for classes that have untyped constructors.
-        return !classType.details.typeParameters[0].details.isSynthesized;
+        if (firstTypeParam.details.isSynthesized) {
+            return false;
+        }
+
+        // If the first type parameter has a default type, then no
+        // type arguments are needed.
+        if (firstTypeParam.details.defaultType) {
+            return false;
+        }
+
+        return true;
     }
 
     // There are a few built-in special classes that require
@@ -2368,6 +2418,43 @@ export function requiresSpecialization(
     return false;
 }
 
+// Determines if the variance of the type argument for a generic class is compatible
+// With the declared variance of the corresponding type parameter.
+export function isVarianceOfTypeArgumentCompatible(type: Type, typeParamVariance: Variance): boolean {
+    if (typeParamVariance === Variance.Unknown || typeParamVariance === Variance.Auto) {
+        return true;
+    }
+
+    if (isTypeVar(type) && !type.details.isParamSpec && !type.details.isVariadic) {
+        const typeArgVariance = type.details.declaredVariance;
+
+        if (typeArgVariance === Variance.Contravariant || typeArgVariance === Variance.Covariant) {
+            return typeArgVariance === typeParamVariance;
+        }
+    } else if (isClassInstance(type)) {
+        if (type.details.typeParameters && type.details.typeParameters.length > 0) {
+            return type.details.typeParameters.every((typeParam, index) => {
+                let typeArgType: Type | undefined;
+
+                if (typeParam.details.isParamSpec || typeParam.details.isVariadic) {
+                    return true;
+                }
+
+                if (type.typeArguments && index < type.typeArguments.length) {
+                    typeArgType = type.typeArguments[index];
+                }
+
+                const effectiveVariance =
+                    typeParam.details.declaredVariance === Variance.Invariant ? Variance.Invariant : typeParamVariance;
+
+                return isVarianceOfTypeArgumentCompatible(typeArgType ?? UnknownType.create(), effectiveVariance);
+            });
+        }
+    }
+
+    return true;
+}
+
 // Computes the method resolution ordering for a class whose base classes
 // have already been filled in. The algorithm for computing MRO is described
 // here: https://www.python.org/download/releases/2.3/mro/. It returns true
@@ -2413,7 +2500,7 @@ export function computeMroLinearization(classType: ClassType): boolean {
     // Construct the list of class lists that need to be merged.
     const classListsToMerge: Type[][] = [];
 
-    filteredBaseClasses.forEach((baseClass, index) => {
+    filteredBaseClasses.forEach((baseClass) => {
         if (isInstantiableClass(baseClass)) {
             const typeVarContext = buildTypeVarContextFromSpecializedClass(baseClass, /* makeConcrete */ false);
             classListsToMerge.push(
@@ -2672,7 +2759,7 @@ class TypeVarTransformer {
             // _pendingTypeVarTransformations set.
             const typeVarName = TypeVarType.getNameWithScope(type);
             if (!this._pendingTypeVarTransformations.has(typeVarName)) {
-                replacementType = this.transformTypeVar(type);
+                replacementType = this.transformTypeVar(type) ?? type;
 
                 if (!this._isTransformingTypeArg) {
                     this._pendingTypeVarTransformations.add(typeVarName);
@@ -2743,7 +2830,7 @@ class TypeVarTransformer {
         return type;
     }
 
-    transformTypeVar(typeVar: TypeVarType): Type {
+    transformTypeVar(typeVar: TypeVarType): Type | undefined {
         return typeVar;
     }
 
@@ -2844,15 +2931,12 @@ class TypeVarTransformer {
                 } else {
                     const typeParamName = TypeVarType.getNameWithScope(typeParam);
                     if (!this._pendingTypeVarTransformations.has(typeParamName)) {
-                        replacementType = this.transformTypeVar(typeParam);
+                        const transformedType = this.transformTypeVar(typeParam);
+                        replacementType = transformedType ?? typeParam;
 
                         if (replacementType !== typeParam) {
-                            if (!this._isTransformingTypeArg) {
-                                this._pendingTypeVarTransformations.add(typeParamName);
-                                replacementType = this.apply(replacementType, recursionCount);
-                                this._pendingTypeVarTransformations.delete(typeParamName);
-                            }
-
+                            specializationNeeded = true;
+                        } else if (transformedType !== undefined && !classType.typeArguments) {
                             specializationNeeded = true;
                         }
                     }
@@ -3030,7 +3114,7 @@ class TypeVarTransformer {
         }
 
         // Unpack the tuple and synthesize a new function in the process.
-        const newFunctionType = FunctionType.createSynthesizedInstance('');
+        const newFunctionType = FunctionType.createSynthesizedInstance('', functionType.details.flags);
         let insertKeywordOnlySeparator = false;
         let swallowPositionOnlySeparator = false;
 
@@ -3145,13 +3229,18 @@ class ApplySolvedTypeVarsTransformer extends TypeVarTransformer {
             }
 
             // If this typeVar is in scope for what we're solving but the type
-            // var map doesn't contain any entry for it, replace with Unknown.
+            // var map doesn't contain any entry for it, replace with the
+            // default or Unknown.
             if (this._unknownIfNotFound && !this._typeVarContext.hasSolveForScope(WildcardTypeVarScopeId)) {
+                if (typeVar.details.defaultType) {
+                    return typeVar.details.defaultType;
+                }
+
                 return UnknownType.create();
             }
         }
 
-        return typeVar;
+        return undefined;
     }
 
     override transformUnionSubtype(preTransform: Type, postTransform: Type): Type | undefined {
@@ -3183,8 +3272,16 @@ class ApplySolvedTypeVarsTransformer extends TypeVarTransformer {
         return postTransform;
     }
 
-    override transformVariadicTypeVar(typeVar: TypeVarType) {
+    override transformVariadicTypeVar(typeVar: TypeVarType): TupleTypeArgument[] | undefined {
         if (!typeVar.scopeId || !this._typeVarContext.hasSolveForScope(typeVar.scopeId)) {
+            if (
+                typeVar.details.defaultType &&
+                isClassInstance(typeVar.details.defaultType) &&
+                typeVar.details.defaultType.tupleTypeArguments
+            ) {
+                return typeVar.details.defaultType.tupleTypeArguments;
+            }
+
             return undefined;
         }
 
@@ -3202,6 +3299,19 @@ class ApplySolvedTypeVarsTransformer extends TypeVarTransformer {
         }
 
         if (this._unknownIfNotFound && !this._typeVarContext.hasSolveForScope(WildcardTypeVarScopeId)) {
+            // Use the default value if there is one.
+            if (paramSpec.details.defaultType && isFunction(paramSpec.details.defaultType)) {
+                const funcType = paramSpec.details.defaultType;
+
+                return {
+                    flags: funcType.details.flags,
+                    parameters: funcType.details.parameters,
+                    typeVarScopeId: funcType.details.typeVarScopeId,
+                    docString: funcType.details.docString,
+                    paramSpec: funcType.details.paramSpec,
+                };
+            }
+
             // Convert to the ParamSpec equivalent of "Unknown".
             const paramSpecValue: ParamSpecValue = {
                 flags: FunctionTypeFlags.SkipArgsKwargsCompatibilityCheck,
@@ -3219,48 +3329,12 @@ class ApplySolvedTypeVarsTransformer extends TypeVarTransformer {
 }
 
 class ExpectedConstructorTypeTransformer extends TypeVarTransformer {
-    static synthesizedTypeVarIndexForExpectedType = 1;
-
-    dummyScopeId = '__expected_type_scope_id';
-    dummyTypeVarPrefix = '__expected_type_';
-
-    constructor(private _typeVarContext: TypeVarContext, private _liveTypeVarScopes: TypeVarScopeId[]) {
+    constructor(private _liveTypeVarScopes: TypeVarScopeId[]) {
         super();
-
-        this._typeVarContext.addSolveForScope(this.dummyScopeId);
     }
 
     private _isTypeVarLive(typeVar: TypeVarType) {
         return this._liveTypeVarScopes.some((scopeId) => typeVar.scopeId === scopeId);
-    }
-
-    private _createDummyTypeVar(prevTypeVar: TypeVarType) {
-        // If we previously synthesized this dummy type var, just return it.
-        if (prevTypeVar.details.isSynthesized && prevTypeVar.details.name.startsWith(this.dummyTypeVarPrefix)) {
-            return prevTypeVar;
-        }
-
-        const isInstance = TypeBase.isInstance(prevTypeVar);
-        let newTypeVar = TypeVarType.createInstance(
-            `__expected_type_${ExpectedConstructorTypeTransformer.synthesizedTypeVarIndexForExpectedType}`
-        );
-        newTypeVar.details.isSynthesized = true;
-        newTypeVar.scopeId = this.dummyScopeId;
-        newTypeVar.nameWithScope = TypeVarType.makeNameWithScope(newTypeVar.details.name, this.dummyScopeId);
-        if (!isInstance) {
-            newTypeVar = convertToInstantiable(newTypeVar) as TypeVarType;
-        }
-
-        // If the original TypeVar was bound or constrained, make the replacement as well.
-        newTypeVar.details.boundType = prevTypeVar.details.boundType;
-        newTypeVar.details.constraints = prevTypeVar.details.constraints;
-
-        // Also copy the variance.
-        newTypeVar.details.declaredVariance = prevTypeVar.details.declaredVariance;
-        newTypeVar.computedVariance = prevTypeVar.computedVariance;
-
-        ExpectedConstructorTypeTransformer.synthesizedTypeVarIndexForExpectedType++;
-        return newTypeVar;
     }
 
     override transformTypeVar(typeVar: TypeVarType) {
@@ -3270,6 +3344,6 @@ class ExpectedConstructorTypeTransformer extends TypeVarTransformer {
             return typeVar;
         }
 
-        return this._createDummyTypeVar(typeVar);
+        return AnyType.create();
     }
 }

@@ -25,8 +25,8 @@ export interface Host {
 
 // ! Cython
 export interface PythonExecDetails {
-    arch: string,
-    isGlobal: boolean,
+    arch: string;
+    isGlobal: boolean;
 }
 
 export interface CythonExecDetails {

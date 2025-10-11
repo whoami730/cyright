@@ -11,6 +11,7 @@
 import { CancellationToken } from 'vscode-languageserver-protocol';
 
 import { DiagnosticLevel } from '../common/configOptions';
+import { ConsoleInterface } from '../common/console';
 import { Diagnostic, DiagnosticAddendum } from '../common/diagnostic';
 import { TextRange } from '../common/textRange';
 import {
@@ -31,6 +32,7 @@ import {
 } from '../parser/parseNodes';
 import * as DeclarationUtils from './aliasDeclarationUtils';
 import { AnalyzerFileInfo } from './analyzerFileInfo';
+import { CodeFlowReferenceExpressionNode, FlowNode } from './codeFlowTypes';
 import { Declaration } from './declaration';
 import { SymbolWithScope } from './scope';
 import { Symbol } from './symbol';
@@ -105,6 +107,11 @@ export const enum EvaluatorFlags {
     // associated with an outer scope should be associated with
     // the containing function's scope.
     AssociateTypeVarsWithCurrentScope = 1 << 13,
+
+    // When a new class-scoped TypeVar is used within a class
+    // declaration, make sure that it is not used to parameterize
+    // a base class whose TypeVar variance is inconsistent.
+    EnforceTypeVarVarianceConsistency = 1 << 14,
 
     // Used for PEP 526-style variable type annotations
     VariableTypeAnnotation = 1 << 15,
@@ -271,6 +278,15 @@ export interface AnnotationTypeOptions {
     notParsedByInterpreter?: boolean;
 }
 
+export interface ExpectedTypeOptions {
+    allowFinal?: boolean;
+    allowRequired?: boolean;
+    allowUnpackedTuple?: boolean;
+    allowParamSpec?: boolean;
+    // ! Cython
+    allowForwardReferences?: boolean;
+}
+
 export interface ExpectedTypeResult {
     type: Type;
     node: ParseNode;
@@ -307,15 +323,12 @@ export interface TypeEvaluator {
     runWithCancellationToken<T>(token: CancellationToken, callback: () => T): T;
 
     getType: (node: ExpressionNode) => Type | undefined;
+    getCachedType: (node: ExpressionNode) => Type | undefined;
     getTypeOfExpression: (node: ExpressionNode, flags?: EvaluatorFlags, expectedType?: Type) => TypeResult;
     getTypeOfAnnotation: (node: ExpressionNode, options?: AnnotationTypeOptions) => Type;
     getTypeOfClass: (node: ClassNode) => ClassTypeResult | undefined;
     getTypeOfFunction: (node: FunctionNode) => FunctionTypeResult | undefined;
-    getTypeOfExpressionExpectingType: (
-        node: ExpressionNode,
-        allowFinal?: boolean,
-        allowRequired?: boolean
-    ) => TypeResult;
+    getTypeOfExpressionExpectingType: (node: ExpressionNode, options?: ExpectedTypeOptions) => TypeResult;
     evaluateTypeForSubnode: (subnode: ParseNode, callback: () => void) => TypeResult | undefined;
     evaluateTypesForStatement: (node: ParseNode) => void;
     evaluateTypesForMatchStatement: (node: MatchNode) => void;
@@ -431,6 +444,7 @@ export interface TypeEvaluator {
         diag: DiagnosticAddendum,
         enforceParamNames?: boolean
     ) => boolean;
+    validateInitSubclassArgs: (node: ClassNode, classType: ClassType, argList: FunctionArgument[]) => void;
     assignTypeToExpression: (
         target: ExpressionNode,
         type: Type,
@@ -484,6 +498,12 @@ export interface TypeEvaluator {
     setTypeForNode: (node: ParseNode, type?: Type, flags?: EvaluatorFlags) => void;
 
     checkForCancellation: () => void;
+    printControlFlowGraph: (
+        flowNode: FlowNode,
+        reference: CodeFlowReferenceExpressionNode | undefined,
+        callName: string,
+        logger: ConsoleInterface
+    ) => void;
 
     // ! Cython
     getTypeOfCythonNode: (node: ParseNode, flags?: EvaluatorFlags, expectedType?: Type) => TypeResult;

@@ -212,7 +212,7 @@ function narrowTypeBasedOnSequencePattern(
                     }
                 }
             } else {
-                if (!isNever(narrowedEntryType) || isAnyOrUnknown(entryType)) {
+                if (!isNever(narrowedEntryType)) {
                     isDefiniteMatch = false;
                 }
             }
@@ -624,7 +624,7 @@ function narrowTypeBasedOnClassPattern(
                                                 matchTypeInstance,
                                                 subjectSubtypeExpanded,
                                                 typeVarContext,
-                                                []
+                                                /* liveTypeVarScopes */ undefined
                                             )
                                         ) {
                                             resultType = applySolvedTypeVars(

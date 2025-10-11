@@ -44,7 +44,7 @@ import {
 import { TokenizerOutput } from '../parser/tokenizer';
 import { KeywordType, OperatorType, StringToken, StringTokenFlags, Token, TokenType } from '../parser/tokenizerTypes';
 import { getScope } from './analyzerNodeInfo';
-import { ParseTreeWalker } from './parseTreeWalker';
+import { getChildNodes, ParseTreeWalker } from './parseTreeWalker';
 
 export const enum PrintExpressionFlags {
     None = 0,
@@ -91,11 +91,9 @@ export function findNodeByOffset(node: ParseNode, offset: number): ParseNode | u
         return undefined;
     }
 
-    const parseTreeWalker = new ParseTreeWalker();
-
     // The range is found within this node. See if we can localize it
     // further by checking its children.
-    const children = parseTreeWalker.visitNode(node);
+    const children = getChildNodes(node);
     for (const child of children) {
         if (child) {
             const containingChild = findNodeByOffset(child, offset);
@@ -1011,13 +1009,6 @@ export function getParentAnnotationNode(node: ExpressionNode): ExpressionNode | 
         if (curNode.nodeType === ParseNodeType.FunctionAnnotation) {
             if (prevNode === curNode.returnTypeAnnotation || curNode.paramTypeAnnotations.some((p) => p === prevNode)) {
                 assert(!prevNode || isExpressionNode(prevNode));
-                return prevNode;
-            }
-            return undefined;
-        }
-
-        if (curNode.nodeType === ParseNodeType.StringList) {
-            if (prevNode === curNode.typeAnnotation) {
                 return prevNode;
             }
             return undefined;

@@ -13,6 +13,7 @@ import * as path from 'path';
 import {
     commands,
     ExtensionContext,
+    ExtensionMode,
     extensions,
     OutputChannel,
     Position,
@@ -64,16 +65,15 @@ export async function activate(context: ExtensionContext) {
 
         const result = await window.showWarningMessage(
             'Cython Enhanced has detected that old extension [Cython VSCode](https://github.com/ktnrg45/vs-code-cython) ' +
-            'is present. This will lead to conflicts and duplicate diagnostics. ' +
-            'Would you like to uninstall Cython VSCode?',
+                'is present. This will lead to conflicts and duplicate diagnostics. ' +
+                'Would you like to uninstall Cython VSCode?',
             uninstallVscodeCython
         );
 
         if (result === uninstallVscodeCython) {
             // Uninstall previous version
             await commands.executeCommand('workbench.extensions.uninstallExtension', OLD_EXTENSION_ID);
-        }
-        else {
+        } else {
             return;
         }
     }
@@ -280,6 +280,81 @@ export async function activate(context: ExtensionContext) {
             })
         );
     });
+
+    // Register the debug only commands when running under the debugger.
+    if (context.extensionMode === ExtensionMode.Development) {
+        // Create a 'when' context for development.
+        commands.executeCommand('setContext', 'pyright.development', true);
+
+        // Register the commands that only work when in development mode.
+        context.subscriptions.push(
+            commands.registerCommand(Commands.dumpTokens, () => {
+                const fileName = window.activeTextEditor?.document.fileName;
+                if (fileName) {
+                    client.sendRequest('workspace/executeCommand', {
+                        command: Commands.dumpFileDebugInfo,
+                        arguments: [fileName, 'tokens'],
+                    });
+                }
+            })
+        );
+
+        context.subscriptions.push(
+            commands.registerCommand(Commands.dumpNodes, () => {
+                const fileName = window.activeTextEditor?.document.fileName;
+                if (fileName) {
+                    client.sendRequest('workspace/executeCommand', {
+                        command: Commands.dumpFileDebugInfo,
+                        arguments: [fileName, 'nodes'],
+                    });
+                }
+            })
+        );
+
+        context.subscriptions.push(
+            commands.registerCommand(Commands.dumpTypes, () => {
+                const fileName = window.activeTextEditor?.document.fileName;
+                if (fileName) {
+                    const start = window.activeTextEditor!.selection.start;
+                    const end = window.activeTextEditor!.selection.end;
+                    const startOffset = window.activeTextEditor!.document.offsetAt(start);
+                    const endOffset = window.activeTextEditor!.document.offsetAt(end);
+                    client.sendRequest('workspace/executeCommand', {
+                        command: Commands.dumpFileDebugInfo,
+                        arguments: [fileName, 'types', startOffset, endOffset],
+                    });
+                }
+            })
+        );
+        context.subscriptions.push(
+            commands.registerCommand(Commands.dumpCachedTypes, () => {
+                const fileName = window.activeTextEditor?.document.fileName;
+                if (fileName) {
+                    const start = window.activeTextEditor!.selection.start;
+                    const end = window.activeTextEditor!.selection.end;
+                    const startOffset = window.activeTextEditor!.document.offsetAt(start);
+                    const endOffset = window.activeTextEditor!.document.offsetAt(end);
+                    client.sendRequest('workspace/executeCommand', {
+                        command: Commands.dumpFileDebugInfo,
+                        arguments: [fileName, 'cachedtypes', startOffset, endOffset],
+                    });
+                }
+            })
+        );
+        context.subscriptions.push(
+            commands.registerCommand(Commands.dumpCodeFlowGraph, () => {
+                const fileName = window.activeTextEditor?.document.fileName;
+                if (fileName) {
+                    const start = window.activeTextEditor!.selection.start;
+                    const startOffset = window.activeTextEditor!.document.offsetAt(start);
+                    client.sendRequest('workspace/executeCommand', {
+                        command: Commands.dumpFileDebugInfo,
+                        arguments: [fileName, 'codeflowgraph', startOffset],
+                    });
+                }
+            })
+        );
+    }
 
     await client.start();
 }

@@ -1,7 +1,7 @@
 # This sample tests the handling of the dataclass_transform mechanism
 # when applied to a class.
 
-from typing import Any, Callable, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Generic, Optional, Tuple, TypeVar, Union
 
 _T = TypeVar("_T")
 
@@ -32,6 +32,8 @@ def model_field(
     field_specifiers=(ModelField, model_field),
 )
 class ModelBase:
+    not_a_field: str
+
     def __init_subclass__(
         cls,
         *,
@@ -48,7 +50,9 @@ class Customer1(ModelBase, frozen=True):
     name2: str = model_field(alias="other_name", default="None")
 
 
-class Customer1Subclass(Customer1, frozen=False):
+# This should generate an error because a non-frozen dataclass cannot
+# derive from a frozen one.
+class Customer1Subclass(Customer1):
     salary: float = model_field()
 
 
@@ -81,3 +85,27 @@ v2 = c2_1 < c2_2
 # This should generate an error because Customer2 supports
 # keyword-only parameters for its constructor.
 c2_3 = Customer2(0, "John")
+
+_T = TypeVar("_T")
+
+@__dataclass_transform__(
+    kw_only_default=True,
+    field_specifiers=(ModelField, model_field),
+)
+class GenericModelBase(Generic[_T]):
+    not_a_field: _T
+
+    def __init_subclass__(
+        cls,
+        *,
+        frozen: bool = False,
+        kw_only: bool = True,
+        order: bool = True,
+    ) -> None:
+        ...
+
+
+class GenericCustomer(GenericModelBase[int]):
+    id: int = model_field()
+
+gc_1 = GenericCustomer(id=3)

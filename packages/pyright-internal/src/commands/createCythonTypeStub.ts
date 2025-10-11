@@ -25,12 +25,7 @@ export class CreateCythonTypeStubCommand implements ServerCommand {
                 stubPath = workspace.rootPath;
             }
 
-            const service = await AnalyzerServiceExecutor.cloneService(
-                this._ls,
-                workspace,
-                undefined,
-                this._ls.createBackgroundAnalysis()
-            );
+            const service = await AnalyzerServiceExecutor.cloneService(this._ls, workspace, undefined);
 
             // Only handle .pyx files
             // TODO: Possibly handle directories

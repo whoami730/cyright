@@ -465,47 +465,49 @@ export function synthesizeDataClassMethods(
     const symbolTable = classType.details.fields;
     const keywordOnlyParams: FunctionParameter[] = [];
 
-    if (!skipSynthesizeInit && !hasExistingInitMethod && allAncestorsKnown) {
-        fullDataClassEntries.forEach((entry) => {
-            if (entry.includeInInit) {
-                // If the type refers to Self of the parent class, we need to
-                // transform it to refer to the Self of this subclass.
-                let effectiveType = entry.type;
-                if (entry.classType !== classType && requiresSpecialization(effectiveType)) {
-                    const typeVarContext = new TypeVarContext(getTypeVarScopeId(entry.classType));
-                    populateTypeVarContextForSelfType(typeVarContext, entry.classType, classType);
-                    effectiveType = applySolvedTypeVars(effectiveType, typeVarContext);
+    if (!skipSynthesizeInit && !hasExistingInitMethod) {
+        if (allAncestorsKnown) {
+            fullDataClassEntries.forEach((entry) => {
+                if (entry.includeInInit) {
+                    // If the type refers to Self of the parent class, we need to
+                    // transform it to refer to the Self of this subclass.
+                    let effectiveType = entry.type;
+                    if (entry.classType !== classType && requiresSpecialization(effectiveType)) {
+                        const typeVarContext = new TypeVarContext(getTypeVarScopeId(entry.classType));
+                        populateTypeVarContextForSelfType(typeVarContext, entry.classType, classType);
+                        effectiveType = applySolvedTypeVars(effectiveType, typeVarContext);
+                    }
+
+                    // Is the field type a descriptor object? If so, we need to extract the corresponding
+                    // type of the __init__ method parameter from the __set__ method.
+                    effectiveType = transformDescriptorType(evaluator, effectiveType);
+
+                    const functionParam: FunctionParameter = {
+                        category: ParameterCategory.Simple,
+                        name: entry.alias || entry.name,
+                        hasDefault: entry.hasDefault,
+                        defaultValueExpression: entry.defaultValueExpression,
+                        type: effectiveType,
+                        hasDeclaredType: true,
+                    };
+
+                    if (entry.isKeywordOnly) {
+                        keywordOnlyParams.push(functionParam);
+                    } else {
+                        FunctionType.addParameter(initType, functionParam);
+                    }
                 }
+            });
 
-                // Is the field type a descriptor object? If so, we need to extract the corresponding
-                // type of the __init__ method parameter from the __set__ method.
-                effectiveType = transformDescriptorType(evaluator, effectiveType);
-
-                const functionParam: FunctionParameter = {
-                    category: ParameterCategory.Simple,
-                    name: entry.alias || entry.name,
-                    hasDefault: entry.hasDefault,
-                    defaultValueExpression: entry.defaultValueExpression,
-                    type: effectiveType,
-                    hasDeclaredType: true,
-                };
-
-                if (entry.isKeywordOnly) {
-                    keywordOnlyParams.push(functionParam);
-                } else {
-                    FunctionType.addParameter(initType, functionParam);
-                }
+            if (keywordOnlyParams.length > 0) {
+                FunctionType.addParameter(initType, {
+                    category: ParameterCategory.VarArgList,
+                    type: AnyType.create(),
+                });
+                keywordOnlyParams.forEach((param) => {
+                    FunctionType.addParameter(initType, param);
+                });
             }
-        });
-
-        if (keywordOnlyParams.length > 0) {
-            FunctionType.addParameter(initType, {
-                category: ParameterCategory.VarArgList,
-                type: AnyType.create(),
-            });
-            keywordOnlyParams.forEach((param) => {
-                FunctionType.addParameter(initType, param);
-            });
         }
 
         symbolTable.set('__init__', Symbol.createWithType(SymbolFlags.ClassMember, initType));
@@ -598,7 +600,10 @@ export function synthesizeDataClassMethods(
             )
         );
     }
-    symbolTable.set('__dataclass_fields__', Symbol.createWithType(SymbolFlags.ClassMember, dictType));
+    symbolTable.set(
+        '__dataclass_fields__',
+        Symbol.createWithType(SymbolFlags.ClassMember | SymbolFlags.ClassVar, dictType)
+    );
 
     if (ClassType.isGeneratedDataClassSlots(classType) && classType.details.localSlotsNames === undefined) {
         classType.details.localSlotsNames = localDataClassEntries.map((entry) => entry.name);
@@ -865,24 +870,34 @@ function applyDataClassBehaviorOverride(
     errorNode: ParseNode,
     classType: ClassType,
     argName: string,
-    argValue: ExpressionNode
+    argValueExpr: ExpressionNode
 ) {
     const fileInfo = AnalyzerNodeInfo.getFileInfo(errorNode);
-    const value = evaluateStaticBoolExpression(argValue, fileInfo.executionEnvironment, fileInfo.definedConstants);
+    const value = evaluateStaticBoolExpression(argValueExpr, fileInfo.executionEnvironment, fileInfo.definedConstants);
 
+    applyDataClassBehaviorOverrideValue(evaluator, errorNode, classType, argName, value);
+}
+
+function applyDataClassBehaviorOverrideValue(
+    evaluator: TypeEvaluator,
+    errorNode: ParseNode,
+    classType: ClassType,
+    argName: string,
+    argValue: boolean | undefined
+) {
     switch (argName) {
         case 'order':
-            if (value === true) {
+            if (argValue === true) {
                 classType.details.flags |= ClassTypeFlags.SynthesizedDataClassOrder;
-            } else if (value === false) {
+            } else if (argValue === false) {
                 classType.details.flags &= ~ClassTypeFlags.SynthesizedDataClassOrder;
             }
             break;
 
         case 'kw_only':
-            if (value === false) {
+            if (argValue === false) {
                 classType.details.flags &= ~ClassTypeFlags.DataClassKeywordOnlyParams;
-            } else if (value === true) {
+            } else if (argValue === true) {
                 classType.details.flags |= ClassTypeFlags.DataClassKeywordOnlyParams;
             }
             break;
@@ -911,15 +926,25 @@ function applyDataClassBehaviorOverride(
                 }
             });
 
-            if (value === true || hasFrozenBaseClass) {
+            if (argValue) {
                 classType.details.flags |= ClassTypeFlags.FrozenDataClass;
 
                 // A frozen dataclass cannot derive from a non-frozen dataclass.
                 if (hasUnfrozenBaseClass) {
                     evaluator.addDiagnostic(
-                        fileInfo.diagnosticRuleSet.reportGeneralTypeIssues,
+                        AnalyzerNodeInfo.getFileInfo(errorNode).diagnosticRuleSet.reportGeneralTypeIssues,
                         DiagnosticRule.reportGeneralTypeIssues,
                         Localizer.Diagnostic.dataClassBaseClassNotFrozen(),
+                        errorNode
+                    );
+                }
+            } else {
+                // A non-frozen dataclass cannot derive from a frozen dataclass.
+                if (hasFrozenBaseClass) {
+                    evaluator.addDiagnostic(
+                        AnalyzerNodeInfo.getFileInfo(errorNode).diagnosticRuleSet.reportGeneralTypeIssues,
+                        DiagnosticRule.reportGeneralTypeIssues,
+                        Localizer.Diagnostic.dataClassBaseClassFrozen(),
                         errorNode
                     );
                 }
@@ -928,41 +953,41 @@ function applyDataClassBehaviorOverride(
         }
 
         case 'init':
-            if (value === false) {
+            if (argValue === false) {
                 classType.details.flags |= ClassTypeFlags.SkipSynthesizedDataClassInit;
-            } else if (value === true) {
+            } else if (argValue === true) {
                 classType.details.flags &= ~ClassTypeFlags.SkipSynthesizedDataClassInit;
             }
             break;
 
         case 'eq':
-            if (value === false) {
+            if (argValue === false) {
                 classType.details.flags |= ClassTypeFlags.SkipSynthesizedDataClassEq;
-            } else if (value === true) {
+            } else if (argValue === true) {
                 classType.details.flags &= ~ClassTypeFlags.SkipSynthesizedDataClassEq;
             }
             break;
 
         case 'slots':
-            if (value === true) {
+            if (argValue === true) {
                 classType.details.flags |= ClassTypeFlags.GenerateDataClassSlots;
 
                 if (classType.details.localSlotsNames) {
                     evaluator.addDiagnostic(
-                        fileInfo.diagnosticRuleSet.reportGeneralTypeIssues,
+                        AnalyzerNodeInfo.getFileInfo(errorNode).diagnosticRuleSet.reportGeneralTypeIssues,
                         DiagnosticRule.reportGeneralTypeIssues,
                         Localizer.Diagnostic.dataClassSlotsOverwrite(),
                         errorNode
                     );
                 }
-            } else if (value === false) {
+            } else if (argValue === false) {
                 classType.details.flags &= ~ClassTypeFlags.GenerateDataClassSlots;
             }
             break;
 
         case 'hash':
         case 'unsafe_hash':
-            if (value === true) {
+            if (argValue === true) {
                 classType.details.flags |= ClassTypeFlags.SynthesizeDataClassUnsafeHash;
             }
             break;
@@ -971,14 +996,27 @@ function applyDataClassBehaviorOverride(
 
 export function applyDataClassClassBehaviorOverrides(
     evaluator: TypeEvaluator,
+    errorNode: ParseNode,
     classType: ClassType,
     args: FunctionArgument[]
 ) {
+    let sawFrozenArg = false;
+
     args.forEach((arg) => {
         if (arg.valueExpression && arg.name) {
             applyDataClassBehaviorOverride(evaluator, arg.name, classType, arg.name.value, arg.valueExpression);
+
+            if (arg.name.value === 'frozen') {
+                sawFrozenArg = true;
+            }
         }
     });
+
+    // If there was no frozen argument, it is implicitly false. This will
+    // validate that we're not overriding a frozen class with a non-frozen class.
+    if (!sawFrozenArg) {
+        applyDataClassBehaviorOverrideValue(evaluator, errorNode, classType, 'frozen', false);
+    }
 }
 
 export function applyDataClassDefaultBehaviors(classType: ClassType, defaultBehaviors: DataClassBehaviors) {
@@ -1000,6 +1038,7 @@ export function applyDataClassDefaultBehaviors(classType: ClassType, defaultBeha
 
 export function applyDataClassDecorator(
     evaluator: TypeEvaluator,
+    errorNode: ParseNode,
     classType: ClassType,
     defaultBehaviors: DataClassBehaviors,
     callNode: CallNode | undefined
@@ -1007,6 +1046,6 @@ export function applyDataClassDecorator(
     applyDataClassDefaultBehaviors(classType, defaultBehaviors);
 
     if (callNode?.arguments) {
-        applyDataClassClassBehaviorOverrides(evaluator, classType, callNode.arguments);
+        applyDataClassClassBehaviorOverrides(evaluator, errorNode, classType, callNode.arguments);
     }
 }

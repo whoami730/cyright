@@ -471,7 +471,7 @@ export const enum ClassTypeFlags {
     // special-case handling of its type arguments.
     TupleClass = 1 << 19,
 
-    // The class has a metaclass of EnumMet or derives from
+    // The class has a metaclass of EnumMeta or derives from
     // a class that has this metaclass.
     EnumClass = 1 << 20,
 
@@ -532,12 +532,13 @@ interface ClassDetails {
     // or a base class.
     classDataClassTransform?: DataClassBehaviors | undefined;
 
-    // Variance of type parameters, inferred if necessary.
-    typeParameterVariance?: Variance[];
-
     // Indicates that one or more type parameters has an
     // autovariance, so variance must be inferred.
     requiresVarianceInference?: boolean;
+
+    // A cached value that indicates whether an instance of this class
+    // is hashable (i.e. does not override "__hash__" with None).
+    isInstanceHashable?: boolean;
 
     // ! Cython
     structType?: CStructType;
@@ -706,15 +707,13 @@ export namespace ClassType {
     ): ClassType {
         const newClassType = TypeBase.cloneType(classType);
 
-        // Never should never appear as a type argument, so replace it with
-        newClassType.typeArguments = typeArguments
-            ? typeArguments.map((t) => (isNever(t) && !t.isNoReturn ? UnknownType.create() : t))
-            : undefined;
-
+        newClassType.typeArguments = typeArguments;
         newClassType.isTypeArgumentExplicit = isTypeArgumentExplicit;
+
         if (includeSubclasses) {
             newClassType.includeSubclasses = true;
         }
+
         newClassType.tupleTypeArguments = tupleTypeArguments
             ? tupleTypeArguments.map((t) =>
                   isNever(t.type) ? { type: UnknownType.create(), isUnbounded: t.isUnbounded } : t
@@ -1249,6 +1248,9 @@ export const enum FunctionTypeFlags {
     // that contains a forward reference that requires the function
     // type itself to be evaluated first).
     PartiallyEvaluated = 1 << 17,
+
+    // Decorated with @override as defined in PEP 698.
+    Overridden = 1 << 18,
 }
 
 interface FunctionDetails {
@@ -1792,6 +1794,10 @@ export namespace FunctionType {
         return !!(type.details.flags & FunctionTypeFlags.PartiallyEvaluated);
     }
 
+    export function isOverridden(type: FunctionType) {
+        return !!(type.details.flags & FunctionTypeFlags.Overridden);
+    }
+
     export function getEffectiveParameterType(type: FunctionType, index: number): Type {
         assert(index < type.details.parameters.length, 'Parameter types array overflow');
 
@@ -2042,6 +2048,7 @@ export interface UnionType extends TypeBase {
     literalStrMap?: Map<string, UnionableType> | undefined;
     literalIntMap?: Map<bigint | number, UnionableType> | undefined;
     typeAliasSources?: Set<UnionType>;
+    includesTypeAliasPlaceholder?: boolean;
 }
 
 export namespace UnionType {
@@ -2075,6 +2082,12 @@ export namespace UnionType {
 
         unionType.flags &= newType.flags;
         unionType.subtypes.push(newType);
+
+        if (isTypeVar(newType) && TypeVarType.isTypeAliasPlaceholder(newType)) {
+            // Note that at least one type alias placeholder was included in
+            // this union. We'll need to expand it before the union is used.
+            unionType.includesTypeAliasPlaceholder = true;
+        }
     }
 
     export function containsType(unionType: UnionType, subtype: Type, recursionCount = 0): boolean {
@@ -2120,6 +2133,7 @@ export interface TypeVarDetails {
     name: string;
     constraints: Type[];
     boundType?: Type | undefined;
+    defaultType?: Type | undefined;
 
     isParamSpec: boolean;
     isVariadic: boolean;
@@ -2320,6 +2334,12 @@ export namespace TypeVarType {
         assert(variance !== Variance.Auto);
 
         return variance;
+    }
+
+    // Indicates whether the specified type is a recursive type alias
+    // placeholder that has not yet been resolved.
+    export function isTypeAliasPlaceholder(type: TypeVarType) {
+        return !!type.details.recursiveTypeAliasName && !type.details.boundType;
     }
 }
 
@@ -2585,6 +2605,24 @@ export function isTypeSame(type1: Type, type2: Type, options: TypeSameOptions = 
                 const param1Type = FunctionType.getEffectiveParameterType(type1, i);
                 const param2Type = FunctionType.getEffectiveParameterType(functionType2, i);
                 if (!isTypeSame(param1Type, param2Type, { ...options, ignoreTypeFlags: false }, recursionCount)) {
+                    return false;
+                }
+            }
+
+            // If the functions have ParamSpecs associated with them, make sure those match.
+            if (!type1.specializedTypes && !functionType2.specializedTypes) {
+                const paramSpec1 = type1.details.paramSpec;
+                const paramSpec2 = functionType2.details.paramSpec;
+
+                if (paramSpec1) {
+                    if (!paramSpec2) {
+                        return false;
+                    }
+
+                    if (!isTypeSame(paramSpec1, paramSpec2, options, recursionCount)) {
+                        return false;
+                    }
+                } else if (paramSpec2) {
                     return false;
                 }
             }
