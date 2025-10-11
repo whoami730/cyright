@@ -4101,7 +4101,7 @@ export class Parser {
 
                 // some casts may be checked casts using ? operator which should be consumed
                 this._consumeTokenIfOperator(OperatorType.QuestionMark);
-                
+
                 const closeToken = this._peekToken() as OperatorToken;
                 if (this._consumeTokenIfOperator(OperatorType.GreaterThan)) {
                     return CCastNode.create(op, typeNode, closeToken, this._parseAtomExpression());
@@ -5879,6 +5879,13 @@ export class Parser {
             leftExpr = nameOrError;
         }
         if (leftExpr.nodeType !== ParseNodeType.TypeAnnotation) {
+            // If leftExpr is the ErrorNode itself, we shall check
+            // if parent is set and if not, we will set.
+            // This fixes a bug where unset parent for typeNode
+            // leads to extension crashes.
+            if (leftExpr.nodeType === ParseNodeType.Error && !typeNode.parent) {
+                typeNode.parent = leftExpr;
+            }
             result.node = leftExpr;
             return result;
         }
@@ -6049,9 +6056,16 @@ export class Parser {
                 break;
         }
 
+        // Two scenarios need to be handled -
+        // - 'cdef' type identifier_list
+        // - 'cdef' identifier_list
+        // That is, in one scenario type is present, and in another, type is absent.
+        // Assume type is present and try to parse based on that, if errors,
+        // assume type is absent and try to parse again.
         const typeNode = this._parseCType();
         const nodes: ParseNode[] = [];
         let hasPointers = false;
+        let hasType = false;
 
         if (typeNode.nodeType !== ParseNodeType.Error) {
             possibleFunction = this._getCFunction(typeNode, false);
@@ -6066,18 +6080,28 @@ export class Parser {
                 this._pushStatements(statements, node);
                 return statements;
             }
-            nodes.push(result.node);
-            if (result.pointers) {
-                hasPointers = true;
-            }
-            while (this._consumeTokenIfType(TokenType.Comma)) {
-                result = this._parseSharedDecl(CTypeNode.cloneForShared(typeNode));
+            if (result.node.nodeType !== ParseNodeType.Error) {
+                hasType = true;
+
                 nodes.push(result.node);
                 if (result.pointers) {
                     hasPointers = true;
                 }
+                while (this._consumeTokenIfType(TokenType.Comma)) {
+                    result = this._parseSharedDecl(CTypeNode.cloneForShared(typeNode));
+                    nodes.push(result.node);
+                    if (result.pointers) {
+                        hasPointers = true;
+                    }
+                }
             }
-        } else {
+        }
+
+        if (!hasType) {
+            // TODO: Parse again when Type is absent.
+            // But how to handle the scenario if say type is present and still there is some other kind of error????
+
+            // Type is assumed to be 'object'
             nodes.push(typeNode);
         }
         const statements = StatementListNode.create(startToken);
