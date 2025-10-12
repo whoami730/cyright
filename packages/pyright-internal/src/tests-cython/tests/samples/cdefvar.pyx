@@ -3,9 +3,9 @@ cdef const int** var1
 
 DEF SIZE = 1
 # Arrays
-cdef int** avar0[1]
-cdef int avar1[SIZE]
-cdef int** avar2[1][2]
+cdef int** avar0[1] # expect-deprecated:  C style array declaration deprecated; "[]" after variable name
+cdef int avar1[SIZE] # expect-deprecated:  C style array declaration deprecated; "[]" after variable name
+cdef int** avar2[1][2] # expect-deprecated:  C style array declaration deprecated; "[]" after variable name
 
 cdef int[0] avar3
 cdef int[SIZE][0] avar4
@@ -23,11 +23,11 @@ cdef int[:, ::1] vvar4
 cdef int[::1, :] vvar5
 
 # Chained
-cdef int** cvar0, cvar1 = 0
-cdef const int** cvar2, **cvar3 = NULL
-cdef int cvar4 = 0, **cvar5
+cdef int** cvar0, cvar1 = 0 # expect-warning: Non-trivial type declarators in shared declaration (e.g. mix of pointers and values). Each pointer declaration should be on its own line.
+cdef const int** cvar2, **cvar3 = NULL # expect-warning: Non-trivial type declarators in shared declaration (e.g. mix of pointers and values). Each pointer declaration should be on its own line.
+cdef int cvar4 = 0, **cvar5 # expect-warning: Non-trivial type declarators in shared declaration (e.g. mix of pointers and values). Each pointer declaration should be on its own line.
 cdef int[:] cvar6, cvar7
-cdef int[:] cvar8, **cvar9 = []
+cdef int[:] cvar8, **cvar9 = [] # expect-warning: Non-trivial type declarators in shared declaration (e.g. mix of pointers and values). Each pointer declaration should be on its own line.
 
 # C Tuple
 cdef (double, double) tvar0
