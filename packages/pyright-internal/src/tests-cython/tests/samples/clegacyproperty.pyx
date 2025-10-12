@@ -2,7 +2,7 @@
 cdef class Cls:
     def __init__(self):
         self.var = 1
-    property prop:
+    property prop: # expect-deprecated: Using legacy property declaration. Use property decorator "@property" instead
         def __get__(self): return self.var
         def __set__(self, value: int): self.var = value
 
