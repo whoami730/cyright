@@ -112,7 +112,7 @@ export const enum ParseNodeType {
     // ! Cython
     CTypeDef,
     CType,
-    CTupleType,
+    CTupleType, // 80
     CVarTrail,
     CTypeTrail,
     CExtern,
@@ -2774,9 +2774,11 @@ export namespace CCallbackNode {
         };
 
         name.parent = node;
+        extendRange(node, name);
 
         if (typeParameters) {
             typeParameters.parent = node;
+            extendRange(node, typeParameters);
         }
 
         return node;
@@ -2911,7 +2913,8 @@ export namespace CEnumNode {
     ) {
         const anonymous = !name;
         if (!name) {
-            name = NameNode.create(IdentifierToken.create(0, 0, '', undefined));
+            // name token should fall after enum token
+            name = _createDummyNameNode(TextRange.getEnd(enumToken));
         }
         const node: CEnumNode = {
             start: enumToken.start,
@@ -2933,14 +2936,15 @@ export namespace CEnumNode {
 
         if (name) {
             name.parent = node;
+            extendRange(node, name);
         }
         suite.parent = node;
+        extendRange(node, suite);
 
         if (typeParameters) {
             typeParameters.parent = node;
+            extendRange(node, typeParameters);
         }
-
-        extendRange(node, suite);
 
         return node;
     }
@@ -3416,3 +3420,12 @@ export type TypeParameterScopeNode =
     | CEnumNode
     | CStructNode
     | CFunctionNode;
+
+
+export function _createDummyIdentifier(start: number) {
+    return IdentifierToken.create(start, 0, '', undefined);
+}
+
+export function _createDummyNameNode(start?: number) {
+    return NameNode.create(_createDummyIdentifier(start ?? 0));
+}
