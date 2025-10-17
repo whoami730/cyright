@@ -273,6 +273,10 @@ export namespace Localizer {
                 getRawString('Diagnostic.clsSelfParamTypeMismatch')
             );
         export const codeTooComplexToAnalyze = () => getRawString('Diagnostic.codeTooComplexToAnalyze');
+        export const collectionAliasInstantiation = () =>
+            new ParameterizedString<{ type: string; alias: string }>(
+                getRawString('Diagnostic.collectionAliasInstantiation')
+            );
         export const comparisonAlwaysFalse = () =>
             new ParameterizedString<{ leftType: string; rightType: string }>(
                 getRawString('Diagnostic.comparisonAlwaysFalse')
@@ -704,6 +708,7 @@ export namespace Localizer {
         export const relativeImportNotAllowed = () => getRawString('Diagnostic.relativeImportNotAllowed');
         export const requiredArgCount = () => getRawString('Diagnostic.requiredArgCount');
         export const requiredNotInTypedDict = () => getRawString('Diagnostic.requiredNotInTypedDict');
+        export const returnInAsyncGenerator = () => getRawString('Diagnostic.returnInAsyncGenerator');
         export const returnMissing = () =>
             new ParameterizedString<{ returnType: string }>(getRawString('Diagnostic.returnMissing'));
         export const returnOutsideFunction = () => getRawString('Diagnostic.returnOutsideFunction');
@@ -1275,6 +1280,10 @@ export namespace Localizer {
         export const useListInstead = () => getRawString('DiagnosticAddendum.useListInstead');
         export const useTupleInstead = () => getRawString('DiagnosticAddendum.useTupleInstead');
         export const useTypeInstead = () => getRawString('DiagnosticAddendum.useTypeInstead');
+        export const varianceMismatch = () =>
+            new ParameterizedString<{ typeVarName: string; className: string }>(
+                getRawString('DiagnosticAddendum.varianceMismatch')
+            );
     }
 
     export namespace CodeAction {

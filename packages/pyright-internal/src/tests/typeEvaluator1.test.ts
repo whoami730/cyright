@@ -624,12 +624,12 @@ test('Call3', () => {
     // Analyze with Python 3.7 settings. This will generate more errors.
     configOptions.defaultPythonVersion = PythonVersion.V3_7;
     const analysisResults37 = TestUtils.typeAnalyzeSampleFiles(['call3.py'], configOptions);
-    TestUtils.validateResults(analysisResults37, 32);
+    TestUtils.validateResults(analysisResults37, 36);
 
     // Analyze with Python 3.8 settings.
     configOptions.defaultPythonVersion = PythonVersion.V3_8;
     const analysisResults38 = TestUtils.typeAnalyzeSampleFiles(['call3.py'], configOptions);
-    TestUtils.validateResults(analysisResults38, 18);
+    TestUtils.validateResults(analysisResults38, 20);
 });
 
 test('Call4', () => {
@@ -749,7 +749,7 @@ test('FunctionMember2', () => {
 test('Annotations1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['annotations1.py']);
 
-    TestUtils.validateResults(analysisResults, 11);
+    TestUtils.validateResults(analysisResults, 10);
 });
 
 test('Annotations2', () => {
@@ -1387,4 +1387,10 @@ test('StaticExpressions1', () => {
     configOptions.defineConstant.set('DEFINED_STR', 'hi!');
     const analysisResults3 = TestUtils.typeAnalyzeSampleFiles(['staticExpressions1.py'], configOptions);
     TestUtils.validateResults(analysisResults3, 0);
+});
+
+test('SpecialForm1', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['specialForm1.py']);
+
+    TestUtils.validateResults(analysisResults, 4);
 });

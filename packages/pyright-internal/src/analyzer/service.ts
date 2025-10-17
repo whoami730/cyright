@@ -41,6 +41,7 @@ import {
     FileSpec,
     forEachAncestorDirectory,
     getDirectoryPath,
+    getFileExtension,
     getFileName,
     getFileSpec,
     getFileSystemEntries,
@@ -65,7 +66,12 @@ import { ReferenceCallback } from '../languageService/referencesProvider';
 import { SignatureHelpResults } from '../languageService/signatureHelpProvider';
 import { AnalysisCompleteCallback } from './analysis';
 import { BackgroundAnalysisProgram, BackgroundAnalysisProgramFactory } from './backgroundAnalysisProgram';
-import { createImportedModuleDescriptor, ImportResolver, ImportResolverFactory } from './importResolver';
+import {
+    createImportedModuleDescriptor,
+    ImportResolver,
+    ImportResolverFactory,
+    supportedSourceFileExtensions,
+} from './importResolver';
 import { MaxAnalysisTime, Program } from './program';
 import { findPythonSearchPaths } from './pythonPathUtils';
 import { IPythonMode } from './sourceFile';
@@ -174,6 +180,7 @@ export class AnalyzerService {
     }
 
     dispose() {
+        this._backgroundAnalysisProgram.program.dispose();
         this._disposed = true;
         this._removeSourceFileWatchers();
         this._removeConfigFileWatcher();
@@ -636,8 +643,6 @@ export class AnalyzerService {
             commandLineOptions.extraPaths
         );
 
-        this._configFilePath = configFilePath || pyprojectFilePath;
-
         if (commandLineOptions.fileSpecs.length > 0) {
             commandLineOptions.fileSpecs.forEach((fileSpec) => {
                 configOptions.include.push(getFileSpec(this.fs, projectRoot, fileSpec));
@@ -656,7 +661,7 @@ export class AnalyzerService {
             });
         }
 
-        if (!this._configFilePath && commandLineOptions.executionRoot) {
+        if (!configFilePath && commandLineOptions.executionRoot) {
             if (commandLineOptions.fileSpecs.length === 0) {
                 // If no config file was found and there are no explicit include
                 // paths specified, assume the caller wants to include all source
@@ -671,6 +676,8 @@ export class AnalyzerService {
                 });
             }
         }
+
+        this._configFilePath = configFilePath || pyprojectFilePath;
 
         // If we found a config file, parse it to compute the effective options.
         let configJsonObj: object | undefined;
@@ -1164,7 +1171,10 @@ export class AnalyzerService {
 
                 // Add the implicit import paths.
                 importResult.filteredImplicitImports.forEach((implicitImport) => {
-                    filesToImport.push(implicitImport.path);
+                    const fileExtension = getFileExtension(implicitImport.path).toLowerCase();
+                    if (supportedSourceFileExtensions.some((ext) => fileExtension === ext)) {
+                        filesToImport.push(implicitImport.path);
+                    }
                 });
 
                 this._backgroundAnalysisProgram.setAllowedThirdPartyImports([this._typeStubTargetImportName]);
