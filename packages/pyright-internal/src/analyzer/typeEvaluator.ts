@@ -745,6 +745,20 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
 
         if (evaluatorOptions.verifyTypeCacheEvaluatorFlags || verifyTypeCacheEvaluatorFlags) {
             if (typeCacheToUse === typeCache && flags !== undefined) {
+                const expectedFlags = typeCacheFlags.get(node.id);
+
+                if (expectedFlags !== undefined && expectedFlags !== flags) {
+                    const message =
+                        `Type cache flags mismatch during write for node ${node.id} ` +
+                        `cached flags = ${expectedFlags}, access flags = ${flags}`
+                    
+                    if (evaluatorOptions.verifyTypeCacheEvaluatorFlags) {
+                        fail(message);
+                    } else {
+                        console.log(message);
+                    }
+                }
+
                 typeCacheFlags.set(node.id, flags);
             }
         }
@@ -4703,7 +4717,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 );
                 // Overwrite the base type
                 baseTypeResult.type = pyType;
-                writeTypeCache(node.leftExpression, pyType, flags, /* isIncomplete */ false);
+                // Flags used for leftExpression are baseTypeFlags
+                writeTypeCache(node.leftExpression, pyType, baseTypeFlags, /* isIncomplete */ false);
             }
         }
 
@@ -24528,6 +24543,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             typeResult.functionType.cythonDetails = { ...cythonDetails };
         }
         if (!typeResult.decoratedType.cythonDetails) {
+            // TODO: Should make this decoratedType instead???
             typeResult.functionType.cythonDetails = { ...cythonDetails };
         }
     }
