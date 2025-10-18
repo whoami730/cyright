@@ -120,6 +120,12 @@ test('Generators15', () => {
     TestUtils.validateResults(analysisResults, 3);
 });
 
+test('Generators16', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['generators16.py']);
+
+    TestUtils.validateResults(analysisResults, 1);
+});
+
 test('Await1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['await1.py']);
 
@@ -317,6 +323,24 @@ test('Loops27', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('Loops28', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['loops28.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Loops29', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['loops29.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Loops30', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['loops30.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('ForLoop1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['forLoop1.py']);
 
@@ -373,6 +397,12 @@ test('ListComprehension7', () => {
 
 test('ListComprehension8', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['listComprehension8.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('ListComprehension9', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['listComprehension9.py']);
 
     TestUtils.validateResults(analysisResults, 0);
 });
@@ -464,7 +494,7 @@ test('TypeAlias5', () => {
 test('TypeAlias6', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeAlias6.py']);
 
-    TestUtils.validateResults(analysisResults, 6);
+    TestUtils.validateResults(analysisResults, 5);
 });
 
 test('TypeAlias7', () => {
@@ -727,6 +757,12 @@ test('Enums8', () => {
 
 test('Enums9', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['enums9.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Enums10', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['enums10.py']);
 
     TestUtils.validateResults(analysisResults, 0);
 });

@@ -13,6 +13,12 @@ export const enum Commands {
     orderImports = 'cython.organizeimports',
     addMissingOptionalToParam = 'cython.addoptionalforparam',
     unusedImport = 'cython.unusedImport',
+    dumpFileDebugInfo = 'cython.dumpFileDebugInfo',
+    dumpTokens = 'cython.dumpTokens',
+    dumpNodes = 'cython.dumpNodes',
+    dumpTypes = 'cython.dumpTypes',
+    dumpCachedTypes = 'cython.dumpCachedTypes',
+    dumpCodeFlowGraph = 'cython.dumpCodeFlowGraph',
 
     // ! Cython
     // Cython specific

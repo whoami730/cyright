@@ -20,6 +20,7 @@ import { Commands } from '../commands/commands';
 import { throwIfCancellationRequested } from '../common/cancellationUtils';
 import { appendArray } from '../common/collectionUtils';
 import { DiagnosticLevel } from '../common/configOptions';
+import { ConsoleInterface } from '../common/console';
 import { assert, assertNever, fail } from '../common/debug';
 import { AddMissingOptionalToParamAction, DiagnosticAddendum } from '../common/diagnostic';
 import { DiagnosticRule } from '../common/diagnosticRules';
@@ -100,7 +101,7 @@ import { KeywordType, OperatorType, StringTokenFlags } from '../parser/tokenizer
 import * as DeclarationUtils from './aliasDeclarationUtils';
 import { AnalyzerFileInfo, ImportLookup, isAnnotationEvaluationPostponed } from './analyzerFileInfo';
 import * as AnalyzerNodeInfo from './analyzerNodeInfo';
-import { CodeFlowAnalyzer, FlowNodeTypeResult, getCodeFlowEngine } from './codeFlowEngine';
+import { CodeFlowAnalyzer, FlowNodeTypeOptions, FlowNodeTypeResult, getCodeFlowEngine } from './codeFlowEngine';
 import {
     CodeFlowReferenceExpressionNode,
     createKeyForReference,
@@ -882,6 +883,11 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         return evaluateTypeForSubnode(node, () => {
             evaluateTypesForExpressionInContext(node);
         })?.type;
+    }
+
+    // Reads the type of the node from the cache.
+    function getCachedType(node: ExpressionNode): Type | undefined {
+        return readTypeCache(node, EvaluatorFlags.None);
     }
 
     // Determines the expected type of a specified node based on surrounding
@@ -1954,6 +1960,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         bindToType?: ClassType | TypeVarType
     ): TypeResult | undefined {
         let memberInfo: ClassMemberLookup | undefined;
+        const classDiag = diag ? new DiagnosticAddendum() : undefined;
+        const metaclassDiag = diag ? new DiagnosticAddendum() : undefined;
 
         if (ClassType.isPartiallyEvaluated(classType)) {
             addDiagnostic(
@@ -1972,7 +1980,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 /* isAccessedThroughObject */ false,
                 memberName,
                 usage,
-                diag,
+                classDiag,
                 memberAccessFlags | MemberAccessFlags.AccessClassMembersOnly,
                 bindToType
             );
@@ -2001,6 +2009,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             }
         }
 
+        const isMemberPresentOnClass = memberInfo?.classType !== undefined;
+
         // If it wasn't found on the class, see if it's part of the metaclass.
         if (!memberInfo) {
             const metaclass = classType.details.effectiveMetaclass;
@@ -2011,7 +2021,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                     /* isAccessedThroughObject */ true,
                     memberName,
                     usage,
-                    /* diag */ undefined,
+                    metaclassDiag,
                     memberAccessFlags,
                     classType
                 );
@@ -2024,6 +2034,12 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 isIncomplete: !!memberInfo.isTypeIncomplete,
                 isAsymmetricDescriptor: memberInfo.isAsymmetricDescriptor,
             };
+        }
+
+        // Determine whether to use the class or metaclass diagnostic addendum.
+        const subDiag = isMemberPresentOnClass ? classDiag : metaclassDiag;
+        if (diag && subDiag) {
+            diag.addAddendum(subDiag);
         }
 
         return undefined;
@@ -2778,8 +2794,9 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             /* reference */ undefined,
             /* targetSymbolId */ undefined,
             /* initialType */ UnboundType.create(),
-            /* isInitialTypeIncomplete */ false,
-            /* ignoreNoReturn */ true
+            {
+                skipNoReturnCallAnalysis: true,
+            }
         );
 
         return codeFlowResult.type !== undefined;
@@ -4102,8 +4119,10 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                         node,
                         symbol.id,
                         typeAtStart,
-                        /* isInitialTypeIncomplete */ false,
-                        /* startNode */ undefined
+                        /* startNode */ undefined,
+                        {
+                            skipConditionalNarrowing: (flags & EvaluatorFlags.ExpectingTypeAnnotation) !== 0,
+                        }
                     );
                     if (codeFlowTypeResult.type) {
                         type = codeFlowTypeResult.type;
@@ -4297,13 +4316,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                             );
                         })
                     ) {
-                        return getFlowTypeOfReference(
-                            node,
-                            symbolWithScope.symbol.id,
-                            effectiveType,
-                            /* isInitialTypeIncomplete */ false,
-                            innerScopeNode
-                        );
+                        return getFlowTypeOfReference(node, symbolWithScope.symbol.id, effectiveType, innerScopeNode);
                     }
                 }
             }
@@ -4760,7 +4773,11 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 node,
                 indeterminateSymbolId,
                 initialType,
-                isInitialTypeIncomplete
+                /* startNode */ undefined,
+                {
+                    isInitialTypeIncomplete,
+                    skipConditionalNarrowing: (flags & EvaluatorFlags.ExpectingTypeAnnotation) !== 0,
+                }
             );
 
             if (codeFlowTypeResult.type) {
@@ -5990,7 +6007,11 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                     node,
                     indeterminateSymbolId,
                     indexTypeResult.type,
-                    !!baseTypeResult.isIncomplete || !!indexTypeResult.isIncomplete
+                    /* startNode */ undefined,
+                    {
+                        isInitialTypeIncomplete: !!baseTypeResult.isIncomplete || !!indexTypeResult.isIncomplete,
+                        skipConditionalNarrowing: (flags & EvaluatorFlags.ExpectingTypeAnnotation) !== 0,
+                    }
                 );
                 if (codeFlowTypeResult.type) {
                     indexTypeResult.type = codeFlowTypeResult.type;
@@ -8500,7 +8521,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
     // Validates that the arguments can be assigned to the call's parameter
     // list, specializes the call based on arg types, and returns the
     // specialized type of the return value. If it detects an error along
-    // the way, it emits a diagnostic and returns undefined.
+    // the way, it emits a diagnostic and sets argumentErrors to true.
     function validateCallArguments(
         errorNode: ExpressionNode,
         argList: FunctionArgument[],
@@ -8805,7 +8826,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                                     return AnyType.create();
                                 }
 
-                                if (isKnownEnumType(className)) {
+                                if (isClass(unexpandedSubtype) && isKnownEnumType(className)) {
                                     return createEnumType(errorNode, expandedSubtype, argList);
                                 }
 
@@ -8942,7 +8963,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                         } else {
                             const memberType = getTypeOfObjectMember(errorNode, expandedSubtype, '__call__')?.type;
 
-                            if (memberType && (isFunction(memberType) || isOverloadedFunction(memberType))) {
+                            if (memberType) {
                                 const functionResult = validateCallArguments(
                                     errorNode,
                                     argList,
@@ -9441,6 +9462,20 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             }
         }
 
+        // If there weren't enough positional arguments to populate all of the
+        // positional-only parameters and the next positional-only parameter is
+        // an unbounded tuple, skip past it.
+        let skippedArgsParam = false;
+        if (
+            positionalOnlyLimitIndex >= 0 &&
+            paramIndex < positionalOnlyLimitIndex &&
+            paramDetails.params[paramIndex].param.category === ParameterCategory.VarArgList &&
+            !isParamSpec(paramDetails.params[paramIndex].param.type)
+        ) {
+            paramIndex++;
+            skippedArgsParam = true;
+        }
+
         // Check if there weren't enough positional arguments to populate all of
         // the positional-only parameters.
         if (
@@ -9453,7 +9488,26 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 firstParamWithDefault >= 0 && firstParamWithDefault < positionalOnlyLimitIndex
                     ? firstParamWithDefault
                     : positionalOnlyLimitIndex;
-            const argsRemainingCount = positionOnlyWithoutDefaultsCount - positionalArgCount;
+
+            // Calculate the number of remaining positional parameters to report.
+            let argsRemainingCount = positionOnlyWithoutDefaultsCount - positionalArgCount;
+            if (skippedArgsParam) {
+                // If we skipped an args parameter above, reduce the count by one
+                // because it's permitted to pass zero arguments to *args.
+                argsRemainingCount--;
+            }
+
+            const firstArgsParam = paramDetails.params.findIndex(
+                (paramInfo) =>
+                    paramInfo.param.category === ParameterCategory.VarArgList && !isParamSpec(paramInfo.param.type)
+            );
+            if (firstArgsParam >= paramIndex && firstArgsParam < positionalOnlyLimitIndex) {
+                // If there is another args parameter beyond the current param index,
+                // reduce the count by one because it's permitted to pass zero arguments
+                // to *args.
+                argsRemainingCount--;
+            }
+
             if (argsRemainingCount > 0) {
                 addDiagnostic(
                     AnalyzerNodeInfo.getFileInfo(errorNode).diagnosticRuleSet.reportGeneralTypeIssues,
@@ -12937,12 +12991,9 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             // Remove any expected subtypes that don't satisfy the minimum
             // parameter count requirement.
             expectedFunctionTypes = expectedFunctionTypes.filter((functionType) => {
-                const functionParamCount = functionType.details.parameters.filter(
-                    (param) => !!param.name && !param.hasDefault
-                ).length;
-                const hasVarArgs = functionType.details.parameters.some(
-                    (param) => !!param.name && param.category !== ParameterCategory.Simple
-                );
+                const params = FunctionType.getFunctionParameters(functionType);
+                const functionParamCount = params.filter((param) => !param.hasDefault).length;
+                const hasVarArgs = params.some((param) => param.category !== ParameterCategory.Simple);
                 return (
                     hasVarArgs ||
                     (functionParamCount >= minLambdaParamCount && functionParamCount <= maxLambdaParamCount)
@@ -13061,15 +13112,6 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         let isIncomplete = false;
         let typeErrors = false;
 
-        const elementTypeResult = getElementTypeFromListComprehension(node);
-        if (elementTypeResult.isIncomplete) {
-            isIncomplete = true;
-        }
-        if (elementTypeResult.typeErrors) {
-            typeErrors = true;
-        }
-        const elementType = elementTypeResult.type;
-
         let isAsync = node.forIfNodes.some((comp) => {
             return (
                 (comp.nodeType === ParseNodeType.ListComprehensionFor && comp.isAsync) ||
@@ -13082,6 +13124,20 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         if (node.expression.nodeType === ParseNodeType.Await) {
             isAsync = true;
         }
+
+        let expectedElementType: Type | undefined;
+        if (expectedType) {
+            expectedElementType = getTypeOfIterator(expectedType, isAsync, /* errorNode */ undefined);
+        }
+
+        const elementTypeResult = getElementTypeFromListComprehension(node, expectedElementType);
+        if (elementTypeResult.isIncomplete) {
+            isIncomplete = true;
+        }
+        if (elementTypeResult.typeErrors) {
+            typeErrors = true;
+        }
+        const elementType = elementTypeResult.type;
 
         // Handle the special case where a generator function (e.g. `(await x for x in y)`)
         // is expected to be an AsyncGenerator.
@@ -14810,7 +14866,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             EvaluatorFlags.AllowGenericClassType |
             EvaluatorFlags.DisallowNakedGeneric |
             EvaluatorFlags.DisallowTypeVarsWithScopeId |
-            EvaluatorFlags.AssociateTypeVarsWithCurrentScope;
+            EvaluatorFlags.AssociateTypeVarsWithCurrentScope |
+            EvaluatorFlags.EnforceTypeVarVarianceConsistency;
         if (fileInfo.isStubFile) {
             exprFlags |= EvaluatorFlags.AllowForwardReferences;
         }
@@ -15253,7 +15310,11 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             dataClassBehaviors = effectiveMetaclass.details.classDataClassTransform;
         } else {
             const baseClassDataTransform = classType.details.mro.find((mroClass) => {
-                return isClass(mroClass) && mroClass.details.classDataClassTransform !== undefined;
+                return (
+                    isClass(mroClass) &&
+                    mroClass.details.classDataClassTransform !== undefined &&
+                    !ClassType.isSameGenericClass(mroClass, classType)
+                );
             });
 
             if (baseClassDataTransform) {
@@ -15353,9 +15414,6 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
 
         // Update the decorated class type.
         writeTypeCache(node, decoratedType, EvaluatorFlags.None, /* isIncomplete */ false);
-
-        // Validate __init_subclass__ call or metaclass keyword arguments.
-        validateInitSubclassArgs(node, classType, initSubclassArgs);
 
         // Stash away a reference to the UnionType class if we encounter it.
         // There's no easy way to otherwise reference it.
@@ -15668,13 +15726,13 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
     // completed.
     function runClassTypeHooks(type: ClassType) {
         classTypeHooks.forEach((hook) => {
-            if (hook.dependency === type) {
+            if (ClassType.isSameGenericClass(hook.dependency, type)) {
                 hook.callback();
             }
         });
 
         // Remove any hooks that depend on this type.
-        classTypeHooks = classTypeHooks.filter((hook) => hook.dependency !== type);
+        classTypeHooks = classTypeHooks.filter((hook) => !ClassType.isSameGenericClass(hook.dependency, type));
     }
 
     // Recomputes the MRO and effective metaclass for the class after dependent
@@ -16115,9 +16173,12 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
 
             // If there was no annotation for the parameter, infer its type if possible.
             let isTypeInferred = false;
-            if (!paramType) {
+            if (!paramTypeNode) {
                 isTypeInferred = true;
-                paramType = inferParameterType(node, functionType.details.flags, index, containingClassType);
+                const inferredType = inferParameterType(node, functionType.details.flags, index, containingClassType);
+                if (inferredType) {
+                    paramType = inferredType;
+                }
             }
 
             const functionParam: FunctionParameter = {
@@ -16403,9 +16464,16 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             const defaultValueType = getTypeOfExpression(paramValueExpr, EvaluatorFlags.ConvertEllipsisToAny).type;
 
             let inferredParamType: Type | undefined;
-            if (isNoneInstance(defaultValueType)) {
-                // Infer Optional[Unknown] in this case.
-                inferredParamType = combineTypes([NoneType.createInstance(), UnknownType.create()]);
+
+            // Is the default value a "None" or an instance of some private class (one
+            // whose name starts with an underscore)? If so, we will assume that the
+            // value is a singleton sentinel. The actual supported type is going to be
+            // a union of this type and Unknown.
+            if (
+                isNoneInstance(defaultValueType) ||
+                (isClassInstance(defaultValueType) && isPrivateOrProtectedName(defaultValueType.details.name))
+            ) {
+                inferredParamType = combineTypes([defaultValueType, UnknownType.create()]);
             } else {
                 // Do not infer certain types like tuple because it's likely to be
                 // more restrictive (narrower) than intended.
@@ -17660,7 +17728,9 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 return;
             }
 
-            getTypeOfAnnotation(annotationNode);
+            getTypeOfAnnotation(annotationNode, {
+                isVariableAnnotation: annotationNode.parent?.nodeType === ParseNodeType.TypeAnnotation,
+            });
             return;
         }
 
@@ -18126,9 +18196,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         reference: CodeFlowReferenceExpressionNode,
         targetSymbolId: number,
         initialType: Type | undefined,
-        isInitialTypeIncomplete: boolean,
         startNode?: FunctionNode | LambdaNode,
-        ignoreNoReturn = false
+        options?: FlowNodeTypeOptions
     ): FlowNodeTypeResult {
         // See if this execution scope requires code flow for this reference expression.
         const referenceKey = createKeyForReference(reference);
@@ -18161,14 +18230,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             return { type: undefined, isIncomplete: false };
         }
 
-        return analyzer.getTypeFromCodeFlow(
-            flowNode!,
-            reference,
-            targetSymbolId,
-            initialType,
-            isInitialTypeIncomplete,
-            ignoreNoReturn
-        );
+        return analyzer.getTypeFromCodeFlow(flowNode!, reference, targetSymbolId, initialType, options);
     }
 
     // Specializes the specified (potentially generic) class type using
@@ -18379,8 +18441,9 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                             typeArgs[typeParameters.length].node
                         );
                     }
+
+                    typeArgCount = typeParameters.length;
                 }
-                typeArgCount = typeParameters.length;
             } else if (typeArgCount < typeParameters.length) {
                 const fileInfo = AnalyzerNodeInfo.getFileInfo(errorNode);
                 addDiagnostic(
@@ -18523,7 +18586,32 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         typeArgTypes = typeArgTypes.map((typeArgType, index) => {
             if (index < typeArgCount) {
                 const diag = new DiagnosticAddendum();
-                const adjustedTypeArgType = applyTypeArgToTypeVar(typeParameters[index], typeArgType, diag);
+                let adjustedTypeArgType = applyTypeArgToTypeVar(typeParameters[index], typeArgType, diag);
+
+                // Determine if the variance must match.
+                if (adjustedTypeArgType && (flags & EvaluatorFlags.EnforceTypeVarVarianceConsistency) !== 0) {
+                    const destType = typeParameters[index];
+                    if (
+                        isTypeVar(adjustedTypeArgType) &&
+                        !adjustedTypeArgType.details.isParamSpec &&
+                        !adjustedTypeArgType.details.isVariadic &&
+                        destType.details.declaredVariance !== Variance.Auto &&
+                        adjustedTypeArgType.details.declaredVariance !== Variance.Auto
+                    ) {
+                        if (
+                            adjustedTypeArgType.details.declaredVariance !== Variance.Invariant &&
+                            adjustedTypeArgType.details.declaredVariance !== destType.details.declaredVariance
+                        ) {
+                            diag.addMessage(
+                                Localizer.DiagnosticAddendum.varianceMismatch().format({
+                                    typeVarName: printType(adjustedTypeArgType),
+                                    className: classType.details.name,
+                                })
+                            );
+                            adjustedTypeArgType = undefined;
+                        }
+                    }
+                }
 
                 if (adjustedTypeArgType) {
                     typeArgType = adjustedTypeArgType;
@@ -18546,6 +18634,13 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
 
             return typeArgType;
         });
+
+        // If the class is partially constructed and doesn't yet have
+        // type parameters, assume that the number and types of supplied type
+        // arguments are correct.
+        if (typeArgs && classType.details.typeParameters.length === 0 && ClassType.isPartiallyEvaluated(classType)) {
+            typeArgTypes = typeArgs.map((t) => convertToInstance(t.type));
+        }
 
         const specializedClass = ClassType.cloneForSpecialization(classType, typeArgTypes, typeArgs !== undefined);
 
@@ -18607,7 +18702,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         }
 
         if (allowRequired) {
-            flags |= EvaluatorFlags.RequiredAllowed;
+            flags |= EvaluatorFlags.RequiredAllowed | EvaluatorFlags.ExpectingTypeAnnotation;
         }
 
         return getTypeOfExpression(node, flags);
@@ -19777,6 +19872,21 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                         throw e;
                     }
                 } else {
+                    // If this resolves to a class decl, we can use a partially-evaluated
+                    // version of the class type.
+                    const resolvedDecl = resolveAliasDeclaration(
+                        decl,
+                        /* resolveLocalNames */ true,
+                        /* allowExternallyHiddenAccess */ AnalyzerNodeInfo.getFileInfo(decl.node).isStubFile
+                    );
+
+                    if (resolvedDecl?.type === DeclarationType.Class) {
+                        const classTypeInfo = getTypeOfClass(resolvedDecl.node);
+                        if (classTypeInfo?.decoratedType) {
+                            typesToCombine.push(classTypeInfo.decoratedType);
+                        }
+                    }
+
                     isIncomplete = true;
                 }
             }
@@ -20351,16 +20461,20 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             if (isDerivedFrom) {
                 assert(inheritanceChain.length > 0);
 
-                return assignClassWithTypeArgs(
-                    destType,
-                    srcType,
-                    inheritanceChain,
-                    diag,
-                    destTypeVarContext,
-                    srcTypeVarContext,
-                    flags,
-                    recursionCount
-                );
+                if (
+                    assignClassWithTypeArgs(
+                        destType,
+                        srcType,
+                        inheritanceChain,
+                        diag?.createAddendum(),
+                        destTypeVarContext,
+                        srcTypeVarContext,
+                        flags,
+                        recursionCount
+                    )
+                ) {
+                    return true;
+                }
             }
         }
 
@@ -21757,62 +21871,64 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                     const srcTypeIndex = remainingSrcSubtypes.findIndex((srcSubtype) =>
                         isTypeSame(srcSubtype, destSubtype, {}, recursionCount)
                     );
+
                     if (srcTypeIndex >= 0) {
                         remainingSrcSubtypes.splice(srcTypeIndex, 1);
                     } else {
-                        isIncompatible = true;
+                        remainingDestSubtypes.push(destSubtype);
                     }
                 }
             });
 
             // For all remaining source subtypes, attempt to find a dest subtype
             // whose primary type matches.
-            if (!isIncompatible) {
-                sortTypes(remainingSrcSubtypes).forEach((srcSubtype) => {
-                    const destTypeIndex = remainingDestSubtypes.findIndex((destSubtype) => {
-                        if (
-                            isClass(srcSubtype) &&
-                            isClass(destSubtype) &&
-                            TypeBase.isInstance(srcSubtype) === TypeBase.isInstance(destSubtype) &&
-                            ClassType.isSameGenericClass(srcSubtype, destSubtype)
-                        ) {
+            sortTypes(remainingSrcSubtypes).forEach((srcSubtype) => {
+                const destTypeIndex = remainingDestSubtypes.findIndex((destSubtype) => {
+                    if (
+                        isClass(srcSubtype) &&
+                        isClass(destSubtype) &&
+                        TypeBase.isInstance(srcSubtype) === TypeBase.isInstance(destSubtype) &&
+                        ClassType.isSameGenericClass(srcSubtype, destSubtype)
+                    ) {
+                        return true;
+                    }
+
+                    if (isFunction(srcSubtype) || isOverloadedFunction(srcSubtype)) {
+                        if (isFunction(destSubtype) || isOverloadedFunction(destSubtype)) {
                             return true;
                         }
-
-                        if (isFunction(srcSubtype) || isOverloadedFunction(srcSubtype)) {
-                            if (isFunction(destSubtype) || isOverloadedFunction(destSubtype)) {
-                                return true;
-                            }
-                        }
-
-                        return false;
-                    });
-
-                    if (destTypeIndex >= 0) {
-                        if (
-                            !assignType(
-                                remainingDestSubtypes[destTypeIndex],
-                                srcSubtype,
-                                diag?.createAddendum(),
-                                destTypeVarContext,
-                                srcTypeVarContext,
-                                flags,
-                                recursionCount
-                            )
-                        ) {
-                            isIncompatible = true;
-                        }
-
-                        remainingDestSubtypes.splice(destTypeIndex, 1);
-                        remainingSrcSubtypes = remainingSrcSubtypes.filter((t) => t !== srcSubtype);
                     }
+
+                    return false;
                 });
-            }
+
+                if (destTypeIndex >= 0) {
+                    if (
+                        !assignType(
+                            remainingDestSubtypes[destTypeIndex],
+                            srcSubtype,
+                            diag?.createAddendum(),
+                            destTypeVarContext,
+                            srcTypeVarContext,
+                            flags,
+                            recursionCount
+                        )
+                    ) {
+                        isIncompatible = true;
+                    }
+
+                    remainingDestSubtypes.splice(destTypeIndex, 1);
+                    remainingSrcSubtypes = remainingSrcSubtypes.filter((t) => t !== srcSubtype);
+                }
+            });
 
             // If there is are remaining dest subtypes and they're all type variables,
             // attempt to assign the remaining source subtypes to them.
             if (!isIncompatible && (remainingDestSubtypes.length !== 0 || remainingSrcSubtypes.length !== 0)) {
-                if (remainingDestSubtypes.length === 0 || remainingDestSubtypes.some((t) => !isTypeVar(t))) {
+                const isReversed = (flags & AssignTypeFlags.ReverseTypeVarMatching) !== 0;
+                const effectiveDestSubtypes = isReversed ? remainingSrcSubtypes : remainingDestSubtypes;
+
+                if (effectiveDestSubtypes.length === 0 || effectiveDestSubtypes.some((t) => !isTypeVar(t))) {
                     isIncompatible = true;
                 } else if (remainingDestSubtypes.length === remainingSrcSubtypes.length) {
                     // If the number of remaining source subtypes is the same as the number
@@ -21838,8 +21954,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                     // the first destination TypeVar.
                     if (
                         !assignType(
-                            remainingDestSubtypes[0],
-                            combineTypes(remainingSrcSubtypes),
+                            isReversed ? combineTypes(remainingDestSubtypes) : remainingDestSubtypes[0],
+                            isReversed ? remainingSrcSubtypes[0] : combineTypes(remainingSrcSubtypes),
                             diag?.createAddendum(),
                             destTypeVarContext,
                             srcTypeVarContext,
@@ -23149,10 +23265,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             const effectiveSrcType = (flags & AssignTypeFlags.ReverseTypeVarMatching) === 0 ? srcType : destType;
 
             if (effectiveDestType.details.paramSpec) {
-                const requiredMatchParamCount = effectiveDestType.details.parameters.filter((p) => {
-                    if (!p.name) {
-                        return false;
-                    }
+                const requiredMatchParamCount = FunctionType.getFunctionParameters(effectiveDestType).filter((p) => {
                     if (p.category === ParameterCategory.Simple && isParamSpec(p.type)) {
                         return false;
                     }
@@ -23805,18 +23918,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
     // Validates that the specified source type matches the constraints
     // of the type variable. If successful, it returns the constraint
     // type that applies. If unsuccessful, it returns undefined.
-    function applyTypeArgToTypeVar(
-        destType: TypeVarType,
-        srcType: Type,
-        diag: DiagnosticAddendum,
-        flags = AssignTypeFlags.Default,
-        recursionCount = 0
-    ): Type | undefined {
-        if (recursionCount > maxTypeRecursionCount) {
-            return srcType;
-        }
-        recursionCount++;
-
+    function applyTypeArgToTypeVar(destType: TypeVarType, srcType: Type, diag: DiagnosticAddendum): Type | undefined {
         if (isAnyOrUnknown(srcType)) {
             return srcType;
         }
@@ -23824,11 +23926,18 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         let effectiveSrcType: Type = srcType;
 
         if (isTypeVar(srcType)) {
-            if (isTypeSame(srcType, destType, {}, recursionCount)) {
+            if (isTypeSame(srcType, destType)) {
                 return srcType;
             }
 
             effectiveSrcType = makeTopLevelTypeVarsConcrete(srcType);
+        }
+
+        // If this is a partially-evaluated class, don't perform any further
+        // checks. Assume in this case that the type is compatible with the
+        // bound or constraint.
+        if (isClass(effectiveSrcType) && ClassType.isPartiallyEvaluated(effectiveSrcType)) {
+            return srcType;
         }
 
         // If there's a bound type, make sure the source is derived from it.
@@ -23839,9 +23948,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                     effectiveSrcType,
                     diag.createAddendum(),
                     /* destTypeVarContext */ undefined,
-                    /* srcTypeVarContext */ undefined,
-                    flags,
-                    recursionCount
+                    /* srcTypeVarContext */ undefined
                 )
             ) {
                 // Avoid adding a message that will confuse users if the TypeVar was
@@ -23897,17 +24004,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             // Make sure all the source constraint types map to constraint types in the dest.
             if (
                 srcType.details.constraints.every((sourceConstraint) => {
-                    return constraints.some((destConstraint) =>
-                        assignType(
-                            destConstraint,
-                            sourceConstraint,
-                            /* diag */ undefined,
-                            /* destTypeVarContext */ undefined,
-                            /* srcTypeVarContext */ undefined,
-                            AssignTypeFlags.Default,
-                            recursionCount
-                        )
-                    );
+                    return constraints.some((destConstraint) => assignType(destConstraint, sourceConstraint));
                 })
             ) {
                 return srcType;
@@ -23917,29 +24014,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
 
             // Try to find the best (narrowest) match among the constraints.
             for (const constraint of constraints) {
-                if (
-                    assignType(
-                        constraint,
-                        effectiveSrcType,
-                        /* diag */ undefined,
-                        /* destTypeVarContext */ undefined,
-                        /* srcTypeVarContext */ undefined,
-                        AssignTypeFlags.Default,
-                        recursionCount
-                    )
-                ) {
-                    if (
-                        !bestConstraintSoFar ||
-                        assignType(
-                            bestConstraintSoFar,
-                            constraint,
-                            /* diag */ undefined,
-                            /* destTypeVarContext */ undefined,
-                            /* srcTypeVarContext */ undefined,
-                            AssignTypeFlags.Default,
-                            recursionCount
-                        )
-                    ) {
+                if (assignType(constraint, effectiveSrcType)) {
+                    if (!bestConstraintSoFar || assignType(bestConstraintSoFar, constraint)) {
                         bestConstraintSoFar = constraint;
                     }
                 }
@@ -24322,6 +24398,15 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         const fileInfo = AnalyzerNodeInfo.getFileInfo(node);
         const range = convertOffsetsToRange(node.start, node.start + node.length, fileInfo.lines);
         return (range.start.line + 1).toString();
+    }
+
+    function printControlFlowGraph(
+        flowNode: FlowNode,
+        reference: CodeFlowReferenceExpressionNode | undefined,
+        callName: string,
+        logger: ConsoleInterface
+    ) {
+        return codeFlowEngine.printControlFlowGraph(flowNode, reference, callName, logger);
     }
 
     // ! Cython
@@ -25590,6 +25675,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
     const evaluatorInterface: TypeEvaluator = {
         runWithCancellationToken,
         getType,
+        getCachedType,
         getTypeOfExpression,
         getTypeOfAnnotation,
         getTypeOfClass,
@@ -25646,6 +25732,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         narrowConstrainedTypeVar,
         assignType,
         validateOverrideMethod,
+        validateInitSubclassArgs,
         assignTypeToExpression,
         assignClassToSelf,
         getTypedDictClassType,
@@ -25671,6 +25758,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         useSpeculativeMode,
         setTypeForNode,
         checkForCancellation,
+        printControlFlowGraph,
         // ! Cython
         getTypeOfCythonNode,
     };

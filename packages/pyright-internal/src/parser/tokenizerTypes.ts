@@ -257,6 +257,8 @@ export const enum CommentType {
     Regular,
     IPythonMagic,
     IPythonShellEscape,
+    IPythonCellMagic,
+    IPythonCellShellEscape,
 }
 
 export interface Comment extends TextRange {

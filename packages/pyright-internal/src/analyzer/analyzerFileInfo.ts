@@ -33,7 +33,7 @@ export interface ImportLookupResult {
 
 export interface AnalyzerFileInfo {
     importLookup: ImportLookup;
-    futureImports: Map<string, boolean>;
+    futureImports: Set<string>;
     builtinsScope?: Scope | undefined;
     diagnosticSink: TextRangeDiagnosticSink;
     executionEnvironment: ExecutionEnvironment;
@@ -54,5 +54,5 @@ export interface AnalyzerFileInfo {
 }
 
 export function isAnnotationEvaluationPostponed(fileInfo: AnalyzerFileInfo) {
-    return fileInfo.futureImports.get('annotations') !== undefined || fileInfo.isStubFile;
+    return fileInfo.futureImports.has('annotations') || fileInfo.isStubFile;
 }

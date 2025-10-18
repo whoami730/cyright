@@ -8,7 +8,6 @@
  * and all of their recursive imports.
  */
 
-import { getHeapStatistics } from 'v8';
 import { CancellationToken, CompletionItem, DocumentSymbol } from 'vscode-languageserver';
 import { TextDocumentContentChangeEvent } from 'vscode-languageserver-textdocument';
 import {
@@ -72,6 +71,7 @@ import { ParseNodeType } from '../parser/parseNodes';
 import { ParseResults } from '../parser/parser';
 import { AbsoluteModuleDescriptor, ImportLookupResult } from './analyzerFileInfo';
 import * as AnalyzerNodeInfo from './analyzerNodeInfo';
+import { CacheManager } from './cacheManager';
 import { CircularDependency } from './circularDependency';
 import { Declaration } from './declaration';
 import { ImportResolver } from './importResolver';
@@ -119,6 +119,8 @@ export interface SourceFileInfo {
     // scope of the chained source file will be inserted before
     // current file's scope.
     chainedSourceFile?: SourceFileInfo | undefined;
+
+    effectiveFutureImports?: Set<string>;
 
     // Information about why the file is included in the program
     // and its relation to other source files in the program.
@@ -197,7 +199,13 @@ export class Program {
         this._importResolver = initialImportResolver;
         this._configOptions = initialConfigOptions;
 
+        CacheManager.registerCacheOwner(this);
+
         this._createNewEvaluator();
+    }
+
+    dispose() {
+        CacheManager.unregisterCacheOwner(this);
     }
 
     get evaluator(): TypeEvaluator | undefined {
@@ -367,7 +375,7 @@ export class Program {
                 : undefined;
 
             sourceFileInfo.sourceFile.markDirty();
-            this._markFileDirtyRecursive(sourceFileInfo, new Map<string, boolean>());
+            this._markFileDirtyRecursive(sourceFileInfo, new Set<string>());
         }
     }
 
@@ -383,7 +391,7 @@ export class Program {
             // people who use diagnosticMode Workspace.
             if (sourceFileInfo.sourceFile.didContentsChangeOnDisk()) {
                 sourceFileInfo.sourceFile.markDirty();
-                this._markFileDirtyRecursive(sourceFileInfo, new Map<string, boolean>());
+                this._markFileDirtyRecursive(sourceFileInfo, new Set<string>());
             }
         }
 
@@ -395,7 +403,7 @@ export class Program {
     }
 
     markAllFilesDirty(evenIfContentsAreSame: boolean, indexingNeeded = true) {
-        const markDirtyMap = new Map<string, boolean>();
+        const markDirtySet = new Set<string>();
 
         this._sourceFileList.forEach((sourceFileInfo) => {
             if (evenIfContentsAreSame) {
@@ -405,17 +413,17 @@ export class Program {
 
                 // Mark any files that depend on this file as dirty
                 // also. This will retrigger analysis of these other files.
-                this._markFileDirtyRecursive(sourceFileInfo, markDirtyMap);
+                this._markFileDirtyRecursive(sourceFileInfo, markDirtySet);
             }
         });
 
-        if (markDirtyMap.size > 0) {
+        if (markDirtySet.size > 0) {
             this._createNewEvaluator();
         }
     }
 
     markFilesDirty(filePaths: string[], evenIfContentsAreSame: boolean, indexingNeeded = true) {
-        const markDirtyMap = new Map<string, boolean>();
+        const markDirtySet = new Set<string>();
         filePaths.forEach((filePath) => {
             const sourceFileInfo = this._getSourceFileInfoFromPath(filePath);
             if (sourceFileInfo) {
@@ -439,12 +447,12 @@ export class Program {
 
                     // Mark any files that depend on this file as dirty
                     // also. This will retrigger analysis of these other files.
-                    this._markFileDirtyRecursive(sourceFileInfo, markDirtyMap);
+                    this._markFileDirtyRecursive(sourceFileInfo, markDirtySet);
                 }
             }
         });
 
-        if (markDirtyMap.size > 0) {
+        if (markDirtySet.size > 0) {
             this._createNewEvaluator();
         }
     }
@@ -941,8 +949,8 @@ export class Program {
 
             // Mark any files that depend on this file as dirty
             // also. This will retrigger analysis of these other files.
-            const markDirtyMap = new Map<string, boolean>();
-            this._markFileDirtyRecursive(fileToParse, markDirtyMap);
+            const markDirtySet = new Set<string>();
+            this._markFileDirtyRecursive(fileToParse, markDirtySet);
 
             // Invalidate the import resolver's cache as well.
             this._importResolver.invalidateCache();
@@ -1007,7 +1015,23 @@ export class Program {
             }
         }
 
-        fileToAnalyze.sourceFile.bind(this._configOptions, this._lookUpImport, builtinsScope);
+        let futureImports = fileToAnalyze.sourceFile.getParseResults()!.futureImports;
+        if (fileToAnalyze.chainedSourceFile) {
+            futureImports = this._getEffectiveFutureImports(futureImports, fileToAnalyze.chainedSourceFile);
+        }
+        fileToAnalyze.effectiveFutureImports = futureImports.size > 0 ? futureImports : undefined;
+
+        fileToAnalyze.sourceFile.bind(this._configOptions, this._lookUpImport, builtinsScope, futureImports);
+    }
+
+    private _getEffectiveFutureImports(futureImports: Set<string>, chainedSourceFile: SourceFileInfo): Set<string> {
+        const effectiveFutureImports = new Set<string>(futureImports);
+
+        chainedSourceFile.effectiveFutureImports?.forEach((value) => {
+            effectiveFutureImports.add(value);
+        });
+
+        return effectiveFutureImports;
     }
 
     private _lookUpImport = (
@@ -1291,23 +1315,19 @@ export class Program {
         firstSourceFile.sourceFile.addCircularDependency(circDep);
     }
 
-    private _markFileDirtyRecursive(
-        sourceFileInfo: SourceFileInfo,
-        markMap: Map<string, boolean>,
-        forceRebinding = false
-    ) {
+    private _markFileDirtyRecursive(sourceFileInfo: SourceFileInfo, markSet: Set<string>, forceRebinding = false) {
         const filePath = normalizePathCase(this._fs, sourceFileInfo.sourceFile.getFilePath());
 
         // Don't mark it again if it's already been visited.
-        if (!markMap.has(filePath)) {
+        if (!markSet.has(filePath)) {
             sourceFileInfo.sourceFile.markReanalysisRequired(forceRebinding);
-            markMap.set(filePath, true);
+            markSet.add(filePath);
 
             sourceFileInfo.importedBy.forEach((dep) => {
                 // Changes on chained source file can change symbols in the symbol table and
                 // dependencies on the dependent file. Force rebinding.
                 const forceRebinding = dep.chainedSourceFile === sourceFileInfo;
-                this._markFileDirtyRecursive(dep, markMap, forceRebinding);
+                this._markFileDirtyRecursive(dep, markSet, forceRebinding);
             });
         }
     }
@@ -2280,6 +2300,25 @@ export class Program {
         return sourceFileInfo.sourceFile.performQuickAction(command, args, token);
     }
 
+    // Returns a value from 0 to 1 (or more) indicating how "full" the cache is
+    // relative to some predetermined high-water mark. We'll compute this value
+    // based on two easy-to-compute metrics: the number of entries in the type
+    // cache and the number of parsed files.
+    getCacheUsage() {
+        const typeCacheEntryCount = this._evaluator!.getTypeCacheEntryCount();
+        const entryCountRatio = typeCacheEntryCount / 750000;
+        const fileCountRatio = this._parsedFileCount / 1000;
+
+        return Math.max(entryCountRatio, fileCountRatio);
+    }
+
+    // Discards any cached information associated with this program.
+    emptyCache() {
+        this._createNewEvaluator();
+        this._discardCachedParseResults();
+        this._parsedFileCount = 0;
+    }
+
     test_createSourceMapper(execEnv: ExecutionEnvironment) {
         return this._createSourceMapper(execEnv, /* mapCompiled */ false);
     }
@@ -2398,46 +2437,24 @@ export class Program {
     }
 
     private _handleMemoryHighUsage() {
-        const typeCacheEntryCount = this._evaluator!.getTypeCacheEntryCount();
-        const convertToMB = (bytes: number) => {
-            return `${Math.round(bytes / (1024 * 1024))}MB`;
-        };
+        const cacheUsage = CacheManager.getCacheUsage();
 
-        // If the type cache size has exceeded a high-water mark, query the heap usage.
-        // Don't bother doing this until we hit this point because the heap usage may not
-        // drop immediately after we empty the cache due to garbage collection timing.
-        if (typeCacheEntryCount > 750000 || this._parsedFileCount > 1000) {
-            const heapStats = getHeapStatistics();
-
-            if (this._configOptions.verboseOutput) {
-                this._console.info(
-                    `Heap stats: ` +
-                        `total_heap_size=${convertToMB(heapStats.total_heap_size)}, ` +
-                        `used_heap_size=${convertToMB(heapStats.used_heap_size)}, ` +
-                        `total_physical_size=${convertToMB(heapStats.total_physical_size)}, ` +
-                        `total_available_size=${convertToMB(heapStats.total_available_size)}, ` +
-                        `heap_size_limit=${convertToMB(heapStats.heap_size_limit)}`
-                );
-            }
+        // If the total cache has exceeded 75%, determine whether we should empty
+        // the cache.
+        if (cacheUsage > 0.75) {
+            const usedHeapRatio = CacheManager.getUsedHeapRatio(
+                this._configOptions.verboseOutput ? this._console : undefined
+            );
 
             // The type cache uses a Map, which has an absolute limit of 2^24 entries
             // before it will fail. If we cross the 95% mark, we'll empty the cache.
             const absoluteMaxCacheEntryCount = (1 << 24) * 0.9;
+            const typeCacheEntryCount = this._evaluator!.getTypeCacheEntryCount();
 
             // If we use more than 90% of the heap size limit, avoid a crash
             // by emptying the type cache.
-            if (
-                typeCacheEntryCount > absoluteMaxCacheEntryCount ||
-                heapStats.used_heap_size > heapStats.heap_size_limit * 0.9
-            ) {
-                this._console.info(
-                    `Emptying type cache to avoid heap overflow. Used ${convertToMB(
-                        heapStats.used_heap_size
-                    )} out of ${convertToMB(heapStats.heap_size_limit)} (${typeCacheEntryCount} cache entries).`
-                );
-                this._createNewEvaluator();
-                this._discardCachedParseResults();
-                this._parsedFileCount = 0;
+            if (typeCacheEntryCount > absoluteMaxCacheEntryCount || usedHeapRatio > 0.9) {
+                CacheManager.emptyCache(this._console);
             }
         }
     }
@@ -2565,10 +2582,10 @@ export class Program {
         // by a tracked file but then abandoned. The import cycle
         // will keep the entire group "alive" if we don't detect
         // the condition and garbage collect them.
-        return this._isImportNeededRecursive(fileInfo, new Map<string, boolean>());
+        return this._isImportNeededRecursive(fileInfo, new Set<string>());
     }
 
-    private _isImportNeededRecursive(fileInfo: SourceFileInfo, recursionMap: Map<string, boolean>) {
+    private _isImportNeededRecursive(fileInfo: SourceFileInfo, recursionSet: Set<string>) {
         if (fileInfo.isTracked || fileInfo.isOpenByClient || fileInfo.shadows.length > 0) {
             return true;
         }
@@ -2576,14 +2593,14 @@ export class Program {
         const filePath = normalizePathCase(this._fs, fileInfo.sourceFile.getFilePath());
 
         // Avoid infinite recursion.
-        if (recursionMap.has(filePath)) {
+        if (recursionSet.has(filePath)) {
             return false;
         }
 
-        recursionMap.set(filePath, true);
+        recursionSet.add(filePath);
 
         for (const importerInfo of fileInfo.importedBy) {
-            if (this._isImportNeededRecursive(importerInfo, recursionMap)) {
+            if (this._isImportNeededRecursive(importerInfo, recursionSet)) {
                 return true;
             }
         }

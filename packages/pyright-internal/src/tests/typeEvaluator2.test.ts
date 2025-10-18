@@ -60,6 +60,12 @@ test('CallbackProtocol8', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('CallbackProtocol9', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['callbackProtocol9.py']);
+
+    TestUtils.validateResults(analysisResults, 2);
+});
+
 test('Assignment1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['assignment1.py']);
 
@@ -956,6 +962,18 @@ test('GenericTypes95', () => {
 
 test('GenericTypes96', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['genericTypes96.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('GenericTypes97', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['genericTypes97.py']);
+
+    TestUtils.validateResults(analysisResults, 4);
+});
+
+test('GenericTypes98', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['genericTypes98.py']);
 
     TestUtils.validateResults(analysisResults, 0);
 });
