@@ -88,7 +88,7 @@ test('Metaclass9', () => {
 
 test('AssignmentExpr1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['assignmentExpr1.py']);
-    TestUtils.validateResults(analysisResults, 5);
+    TestUtils.validateResults(analysisResults, 7);
 });
 
 test('AssignmentExpr2', () => {
@@ -304,6 +304,11 @@ test('Overload11', () => {
     TestUtils.validateResults(analysisResults, 1);
 });
 
+test('Overload12', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['overload12.py']);
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('Final1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['final1.py']);
     TestUtils.validateResults(analysisResults, 1);
@@ -331,6 +336,11 @@ test('Final5', () => {
 
 test('InferredTypes1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['inferredTypes1.py']);
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('InferredTypes2', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['inferredTypes2.py']);
     TestUtils.validateResults(analysisResults, 0);
 });
 
@@ -1149,7 +1159,7 @@ test('Annotated1', () => {
 test('Circular1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['circular1.py']);
 
-    TestUtils.validateResults(analysisResults, 0);
+    TestUtils.validateResults(analysisResults, 2);
 });
 
 test('Circular2', () => {

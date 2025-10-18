@@ -571,10 +571,13 @@ export function isFile(fs: FileSystem, path: string, treatZipDirectoryAsFile = f
 
 export function tryStat(fs: FileSystem, path: string): Stats | undefined {
     try {
-        return fs.statSync(path);
+        if (fs.existsSync(path)) {
+            return fs.statSync(path);
+        }
     } catch (e: any) {
         return undefined;
     }
+    return undefined;
 }
 
 export function tryRealpath(fs: FileSystem, path: string): string | undefined {
@@ -646,7 +649,7 @@ export function getWildcardRegexPattern(rootPath: string, fileSpec: string): str
     const pathComponents = getPathComponents(absolutePath);
 
     const escapedSeparator = getRegexEscapedSeparator();
-    const doubleAsteriskRegexFragment = `(${escapedSeparator}[^${escapedSeparator}.][^${escapedSeparator}]*)*?`;
+    const doubleAsteriskRegexFragment = `(${escapedSeparator}[^${escapedSeparator}][^.][^${escapedSeparator}]*)*?`;
     const reservedCharacterPattern = new RegExp(`[^\\w\\s${escapedSeparator}]`, 'g');
 
     // Strip the directory separator from the root component.

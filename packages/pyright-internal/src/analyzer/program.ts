@@ -85,7 +85,7 @@ import { isStubFile, SourceMapper } from './sourceMapper';
 import { Symbol } from './symbol';
 import { isPrivateOrProtectedName } from './symbolNameUtils';
 import { createTracePrinter } from './tracePrinter';
-import { TypeEvaluator } from './typeEvaluatorTypes';
+import { PrintTypeOptions, TypeEvaluator } from './typeEvaluatorTypes';
 import { createTypeEvaluatorWithTracker } from './typeEvaluatorWithTracker';
 import { PrintTypeFlags } from './typePrinter';
 import { Type } from './types';
@@ -580,6 +580,18 @@ export class Program {
         });
     }
 
+    // Performs parsing and analysis of a single file in the program. If the file is not part of
+    // the program returns false to indicate analysis was not performed.
+    analyzeFile(filePath: string, token: CancellationToken = CancellationToken.None): boolean {
+        return this._runEvaluatorWithCancellationToken(token, () => {
+            const sourceFileInfo = this.getSourceFileInfo(filePath);
+            if (sourceFileInfo && this._checkTypes(sourceFileInfo, token)) {
+                return true;
+            }
+            return false;
+        });
+    }
+
     indexWorkspace(callback: (path: string, results: IndexResults) => void, token: CancellationToken): number {
         if (!this._configOptions.indexing) {
             return 0;
@@ -810,11 +822,11 @@ export class Program {
         return evaluator.getEffectiveTypeOfSymbol(symbol);
     }
 
-    printType(type: Type, expandTypeAlias: boolean): string {
+    printType(type: Type, options?: PrintTypeOptions): string {
         this._handleMemoryHighUsage();
 
         const evaluator = this._evaluator || this._createNewEvaluator();
-        return evaluator.printType(type, expandTypeAlias);
+        return evaluator.printType(type, options);
     }
 
     private static _getPrintTypeFlags(configOptions: ConfigOptions): PrintTypeFlags {
@@ -921,7 +933,6 @@ export class Program {
                 printTypeFlags: Program._getPrintTypeFlags(this._configOptions),
                 logCalls: this._configOptions.logTypeEvaluationTime,
                 minimumLoggingThreshold: this._configOptions.typeEvaluationTimeThreshold,
-                analyzeUnannotatedFunctions: this._configOptions.analyzeUnannotatedFunctions,
                 evaluateUnknownImportsAsAny: !!this._configOptions.evaluateUnknownImportsAsAny,
                 verifyTypeCacheEvaluatorFlags: !!this._configOptions.internalTestMode,
             },
@@ -1097,6 +1108,7 @@ export class Program {
 
         const parseResults = sourceFileInfo.sourceFile.getParseResults();
         const moduleNode = parseResults!.parseTree;
+        const fileInfo = AnalyzerNodeInfo.getFileInfo(moduleNode);
 
         const dunderAllInfo = AnalyzerNodeInfo.getDunderAllInfo(parseResults!.parseTree);
 
@@ -1107,6 +1119,7 @@ export class Program {
             get docString() {
                 return getDocString(moduleNode.statements);
             },
+            isInPyTypedPackage: fileInfo.isInPyTypedPackage,
         };
     };
 
@@ -1673,7 +1686,7 @@ export class Program {
             const content = sourceFileInfo.sourceFile.getFileContent() ?? '';
             if (
                 options.indexingForAutoImportMode &&
-                !options.forceIndexing &&
+                !options.includeAllSymbols &&
                 !sourceFileInfo.sourceFile.isStubFile() &&
                 !sourceFileInfo.sourceFile.isThirdPartyPyTypedPresent()
             ) {
@@ -1843,7 +1856,7 @@ export class Program {
                             this._buildModuleSymbolsMap(
                                 sourceFileInfo,
                                 !!libraryMap,
-                                /* includeIndexUserSymbols */ false,
+                                options.includeUserSymbolsInAutoImport,
                                 token
                             ),
                         token
@@ -1912,7 +1925,7 @@ export class Program {
                     this._buildModuleSymbolsMap(
                         sourceFileInfo,
                         !!libraryMap,
-                        /* includeIndexUserSymbols */ false,
+                        options.includeUserSymbolsInAutoImport,
                         token
                     ),
                 completionItem,
@@ -2693,6 +2706,13 @@ export class Program {
                 ) {
                     thirdPartyImportAllowed = true;
                 }
+            } else if (importer.isThirdPartyImport && this._configOptions.useLibraryCodeForTypes) {
+                // If the importing file is a third-party import, allow importing of
+                // additional third-party imports. This supports the case where the importer
+                // is in a py.typed library but is importing from another non-py.typed
+                // library. It also supports the case where someone explicitly opens a
+                // library source file in their editor.
+                thirdPartyImportAllowed = true;
             }
 
             // Some libraries ship with stub files that import from non-stubs. Don't

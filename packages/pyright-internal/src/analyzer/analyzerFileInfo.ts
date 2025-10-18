@@ -29,6 +29,7 @@ export interface ImportLookupResult {
     dunderAllNames: string[] | undefined;
     usesUnsupportedDunderAllForm: boolean;
     docString: string | undefined;
+    isInPyTypedPackage: boolean;
 }
 
 export interface AnalyzerFileInfo {

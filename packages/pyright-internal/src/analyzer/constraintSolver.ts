@@ -90,6 +90,12 @@ export function assignTypeToTypeVar(
             return true;
         }
 
+        // Never or NoReturn is always assignable to all type variables unless
+        // we're enforcing invariance.
+        if (isNever(srcType) && (flags & AssignTypeFlags.EnforceInvariance) === 0) {
+            return true;
+        }
+
         // If we're in "ignore type var scope" mode, don't generate
         // an error in this path.
         if ((flags & AssignTypeFlags.IgnoreTypeVarScope) !== 0) {
@@ -142,7 +148,7 @@ export function assignTypeToTypeVar(
         return assignTypeToParamSpec(evaluator, destType, srcType, diag, typeVarContext, recursionCount);
     }
 
-    if (destType.details.isVariadic) {
+    if (destType.details.isVariadic && !destType.isVariadicInUnion) {
         if (!isUnpacked(srcType)) {
             const tupleClassType = evaluator.getTupleClassType();
             if (tupleClassType && isInstantiableClass(tupleClassType)) {
@@ -159,6 +165,18 @@ export function assignTypeToTypeVar(
                 srcType = UnknownType.create();
             }
         }
+    }
+
+    // If we're assigning an unpacked TypeVarTuple to a regular TypeVar,
+    // we need to treat it as a union of the unpacked TypeVarTuple.
+    if (
+        isTypeVar(srcType) &&
+        srcType.details.isVariadic &&
+        srcType.isVariadicUnpacked &&
+        !srcType.isVariadicInUnion &&
+        !destType.details.isVariadic
+    ) {
+        srcType = TypeVarType.cloneForUnpacked(srcType, /* isInUnion */ true);
     }
 
     // If we're attempting to assign `type` to Type[T], transform `type` into `Type[Any]`.
@@ -688,6 +706,7 @@ function assignTypeToParamSpec(
                 name: p.name,
                 isNameSynthesized: p.isNameSynthesized,
                 hasDefault: !!p.hasDefault,
+                defaultValueExpression: p.defaultValueExpression,
                 type: FunctionType.getEffectiveParameterType(functionSrcType, index),
             };
             return paramSpecEntry;

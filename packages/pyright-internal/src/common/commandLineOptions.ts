@@ -137,7 +137,7 @@ export class CommandLineOptions {
     enableAmbientAnalysis = true;
 
     // Analyze functions and methods that have no type annotations?
-    analyzeUnannotatedFunctions = true;
+    analyzeUnannotatedFunctions?: boolean;
 
     // ! Cython
     // Include paths to search cython

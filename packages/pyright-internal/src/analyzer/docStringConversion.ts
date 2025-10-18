@@ -513,14 +513,15 @@ class DocStringConverter {
             return;
         }
 
-        if (this._currentLineIsOutsideBlock()) {
+        const prev = this._lineAt(this._lineNum - 1);
+        if (this._currentLineIsOutsideBlock() && _isUndefinedOrWhitespace(prev)) {
             this._trimOutputAndAppendLine('```');
             this._appendLine();
             this._popState();
             return;
         }
 
-        this._appendLine(this._currentLineWithinBlock());
+        this._appendLine(this._currentLine());
         this._eatLine();
     }
 
@@ -683,7 +684,7 @@ class DocStringConverter {
                 });
                 this._appendLine(formattedLine);
 
-                //Convert header end
+                // Convert header end
                 const endHeaderStr = line.trimStart().replace(/=/g, '-').replace(' ', '|');
                 this._appendLine(`|${endHeaderStr}|`);
                 this._eatLine();

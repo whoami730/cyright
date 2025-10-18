@@ -11,15 +11,21 @@ import { isPythonBinary } from '../analyzer/pythonPathUtils';
 import { AnalyzerService, getNextServiceId } from '../analyzer/service';
 import { CommandLineOptions } from '../common/commandLineOptions';
 import { LogLevel } from '../common/console';
-import { createDeferred } from '../common/deferred';
 import { FileSystem } from '../common/fileSystem';
 import { combinePaths } from '../common/pathUtils';
 import {
+    createInitStatus,
     LanguageServerInterface,
     ServerSettings,
     WellKnownWorkspaceKinds,
     WorkspaceServiceInstance,
 } from '../languageServerBase';
+
+export interface CloneOptions {
+    useBackgroundAnalysis?: boolean;
+    typeStubTargetImportName?: string;
+    fileSystem?: FileSystem;
+}
 
 export class AnalyzerServiceExecutor {
     static runWithOptions(
@@ -44,12 +50,13 @@ export class AnalyzerServiceExecutor {
     static async cloneService(
         ls: LanguageServerInterface,
         workspace: WorkspaceServiceInstance,
-        typeStubTargetImportName?: string,
-        fileSystem?: FileSystem
+        options?: CloneOptions
     ): Promise<AnalyzerService> {
         // Allocate a temporary pseudo-workspace to perform this job.
         const instanceName = 'cloned service';
         const serviceId = getNextServiceId(instanceName);
+
+        options = options ?? {};
 
         const tempWorkspace: WorkspaceServiceInstance = {
             workspaceName: `temp workspace for cloned service`,
@@ -60,13 +67,13 @@ export class AnalyzerServiceExecutor {
             serviceInstance: workspace.serviceInstance.clone(
                 instanceName,
                 serviceId,
-                ls.createBackgroundAnalysis(serviceId),
-                fileSystem
+                options.useBackgroundAnalysis ? ls.createBackgroundAnalysis(serviceId) : undefined,
+                options.fileSystem
             ),
             disableLanguageServices: true,
             disableOrganizeImports: true,
             disableWorkspaceSymbol: true,
-            isInitialized: createDeferred<boolean>(),
+            isInitialized: createInitStatus(),
             searchPathsToWatch: [],
         };
 
@@ -75,7 +82,7 @@ export class AnalyzerServiceExecutor {
             ls.rootPath,
             tempWorkspace,
             serverSettings,
-            typeStubTargetImportName,
+            options.typeStubTargetImportName,
             /* trackFiles */ false
         );
 

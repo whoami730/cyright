@@ -1,7 +1,7 @@
 # This sample tests the case where an unpacked TypeVarTuple is used
 # as one or more type arguments for a tuple.
 
-from typing import Iterable, TypeVar, TypeVarTuple
+from typing import Generator, Iterable, TypeVar, TypeVarTuple, Union
 
 T = TypeVar("T")
 Ts = TypeVarTuple("Ts")
@@ -29,4 +29,26 @@ def func3():
 
    for i in v1:
       reveal_type(i, expected_text="tuple[int | str, int | str]")
+
+
+def func5(x: "Iterable[Union[*Ts]]") -> Iterable[Union[*Ts]]:
+    ...
+
+def func6():
+   v1: list[int]  = [i for i in func5([1, 2, 3])]
+   v2: list[int | str] = [i for i in func5([1, "foo"])]
+
+
+def func7(t: "tuple[*Ts]") -> "tuple[Union[*Ts], ...]": ...
+
+def func8(a: int, b: str):
+    v1 = func7(((a, b),))
+    reveal_type(v1, expected_text="tuple[tuple[int, str], ...]")
+
+def func9(x: "tuple[T, ...]", y: "tuple[*Ts]") -> Generator[T | Union[*Ts], None, None]:
+    z = x + y
+    reveal_type(z, expected_text="tuple[T@func9 | Union[*Ts@func9], ...]")
+    for e in z:
+        reveal_type(e, expected_text="T@func9 | Union[*Ts@func9]")
+        yield e
 

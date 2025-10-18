@@ -334,7 +334,7 @@ export class TypeStubWriter extends ParseTreeWalker {
                     let returnType = this._evaluator.getFunctionInferredReturnType(functionType.functionType);
                     returnType = removeUnknownFromUnion(returnType);
                     if (!isNever(returnType) && !isUnknown(returnType)) {
-                        line += ` # -> ${this._evaluator.printType(returnType, /* expandTypeAlias */ false)}:`;
+                        line += ` # -> ${this._evaluator.printType(returnType)}:`;
                     }
                 }
             }
@@ -954,7 +954,7 @@ export class TypeStubWriter extends ParseTreeWalker {
                 if (TypeBase.isInstantiable(type)) {
                     type = TypeBase.cloneTypeAsInstance(type);
                 }
-                transformed = this._evaluator.printType(type, /*expandTypeAlias*/ true);
+                transformed = this._evaluator.printType(type, { expandTypeAlias: true });
             }
         }
         return transformed;

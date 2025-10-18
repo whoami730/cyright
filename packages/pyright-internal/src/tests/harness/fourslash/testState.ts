@@ -36,7 +36,6 @@ import { ConfigOptions } from '../../../common/configOptions';
 import { ConsoleInterface, NullConsole } from '../../../common/console';
 import { Comparison, isNumber, isString, toBoolean } from '../../../common/core';
 import * as debug from '../../../common/debug';
-import { createDeferred } from '../../../common/deferred';
 import { DiagnosticCategory } from '../../../common/diagnostic';
 import { FileEditAction } from '../../../common/editAction';
 import {
@@ -55,6 +54,7 @@ import { getStringComparer } from '../../../common/stringUtils';
 import { DocumentRange, Position, Range as PositionRange, rangesAreEqual, TextRange } from '../../../common/textRange';
 import { TextRangeCollection } from '../../../common/textRangeCollection';
 import {
+    createInitStatus,
     LanguageServerInterface,
     WellKnownWorkspaceKinds,
     WorkspaceServiceInstance,
@@ -175,7 +175,7 @@ export class TestState {
             disableLanguageServices: false,
             disableOrganizeImports: false,
             disableWorkspaceSymbol: false,
-            isInitialized: createDeferred<boolean>(),
+            isInitialized: createInitStatus(),
             searchPathsToWatch: [],
         };
 
@@ -566,6 +566,8 @@ export class TestState {
                         ? result.warnings
                         : category === 'information'
                         ? result.information
+                        : category === 'unused'
+                        ? result.unused
                         : category === 'none'
                         ? []
                         : this.raiseError(`unexpected category ${category}`);
@@ -925,6 +927,7 @@ export class TestState {
                 autoImport: true,
                 extraCommitChars: true,
                 importFormat: ImportFormat.Absolute,
+                includeUserSymbolsInAutoImport: false,
             };
             const nameMap = abbrMap ? new Map<string, AbbreviationInfo>(Object.entries(abbrMap)) : undefined;
             const result = await this.workspace.serviceInstance.getCompletionsForPosition(
@@ -1645,6 +1648,7 @@ export class TestState {
                     errors: diagnostics.filter((diag) => diag.category === DiagnosticCategory.Error),
                     warnings: diagnostics.filter((diag) => diag.category === DiagnosticCategory.Warning),
                     information: diagnostics.filter((diag) => diag.category === DiagnosticCategory.Information),
+                    unused: diagnostics.filter((diag) => diag.category === DiagnosticCategory.UnusedCode),
                 };
                 return [filePath, value] as [string, typeof value];
             } else {

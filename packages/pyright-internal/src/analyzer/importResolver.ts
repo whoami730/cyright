@@ -256,6 +256,7 @@ export class ImportResolver {
             isImportFound: false,
             isPartlyResolved: false,
             isNamespacePackage: false,
+            isInitFilePresent: false,
             isStubPackage: false,
             importFailureInfo,
             resolvedPaths: [],
@@ -987,6 +988,7 @@ export class ImportResolver {
         const resolvedPaths: string[] = [];
         let dirPath = rootPath;
         let isNamespacePackage = false;
+        let isInitFilePresent = false;
         let isStubPackage = false;
         let isStubFile = false;
         let isNativeLib = false;
@@ -1068,7 +1070,8 @@ export class ImportResolver {
                     const pyxFilePath = combinePaths(dirPath, fileNameWithoutExtension + '.pyx');
                     const pxdFilePath = combinePaths(dirPath, fileNameWithoutExtension + '.pxd');
                     const pxiFilePath = combinePaths(dirPath, fileNameWithoutExtension + '.pxi');
-                    let foundInit = false;
+
+                    isInitFilePresent = false;
 
                     if (!moduleDescriptor.isCython) {
                         if (allowPyi && this.fileExistsCached(pyiFilePath)) {
@@ -1077,11 +1080,11 @@ export class ImportResolver {
                             if (isLastPart) {
                                 isStubFile = true;
                             }
-                            foundInit = true;
+                            isInitFilePresent = true;
                         } else if (this.fileExistsCached(pyFilePath)) {
                             importFailureInfo.push(`Resolved import with file '${pyFilePath}'`);
                             resolvedPaths.push(pyFilePath);
-                            foundInit = true;
+                            isInitFilePresent = true;
                         }
                     }
 
@@ -1090,15 +1093,15 @@ export class ImportResolver {
                         if (this.fileExistsCached(pyxFilePath)) {
                             importFailureInfo.push(`Resolved cython import with file '${pyxFilePath}'`);
                             resolvedPaths.push(pyxFilePath);
-                            foundInit = true;
+                            isInitFilePresent = true;
                         } else if (this.fileExistsCached(pxdFilePath)) {
                             importFailureInfo.push(`Resolved cython import with file '${pxdFilePath}'`);
                             resolvedPaths.push(pxdFilePath);
-                            foundInit = true;
+                            isInitFilePresent = true;
                         } else if (this.fileExistsCached(pxiFilePath)) {
                             importFailureInfo.push(`Resolved cython import with file '${pxiFilePath}'`);
                             resolvedPaths.push(pxiFilePath);
-                            foundInit = true;
+                            isInitFilePresent = true;
                         }
                     }
 
@@ -1111,7 +1114,7 @@ export class ImportResolver {
                     if (!isLastPart) {
                         // We are not at the last part, and we found a directory,
                         // so continue to look for the next part.
-                        if (!foundInit) {
+                        if (!isInitFilePresent) {
                             resolvedPaths.push('');
                             isNamespacePackage = true;
                             pyTypedInfo = undefined;
@@ -1120,7 +1123,7 @@ export class ImportResolver {
                     }
 
                     // ! Cython
-                    if (foundInit) {
+                    if (isInitFilePresent) {
                         let paths = [pyFilePath, pyiFilePath];
                         if (moduleDescriptor.isCython) {
                             paths = [pxdFilePath, pxiFilePath, pyxFilePath];
@@ -1224,6 +1227,7 @@ export class ImportResolver {
             importName,
             isRelative: false,
             isNamespacePackage,
+            isInitFilePresent,
             isStubPackage,
             isImportFound: importFound,
             isPartlyResolved,
@@ -1593,11 +1597,18 @@ export class ImportResolver {
                 newImport.isNamespacePackage &&
                 moduleDescriptor.importedSymbols
             ) {
-                if (
-                    !this._isNamespacePackageResolved(moduleDescriptor, bestImportSoFar.implicitImports) &&
-                    this._isNamespacePackageResolved(moduleDescriptor, newImport.implicitImports)
-                ) {
-                    return newImport;
+                if (!this._isNamespacePackageResolved(moduleDescriptor, bestImportSoFar.implicitImports)) {
+                    if (this._isNamespacePackageResolved(moduleDescriptor, newImport.implicitImports)) {
+                        return newImport;
+                    }
+
+                    // Prefer the namespace package that has an __init__.py(i) file present
+                    // in the final directory over one that does not.
+                    if (bestImportSoFar.isInitFilePresent && !newImport.isInitFilePresent) {
+                        return bestImportSoFar;
+                    } else if (!bestImportSoFar.isInitFilePresent && newImport.isInitFilePresent) {
+                        return newImport;
+                    }
                 }
             }
 
@@ -1715,8 +1726,8 @@ export class ImportResolver {
                         readDir(dirRoot, prefix ? `${prefix}.${entry.name}` : entry.name);
                     } else if (entry.name.includes('.py')) {
                         const stripped = stripFileExtension(entry.name);
-                        // Skip __init__.py as a module
-                        if (stripped !== '__init__') {
+                        // Skip anything starting with an underscore.
+                        if (!stripped.startsWith('_')) {
                             cache.add(prefix ? `${prefix}.${stripped}` : stripped);
                         }
                     }
