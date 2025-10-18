@@ -6,32 +6,26 @@
  * TestState wraps currently test states and provides a way to query and manipulate
  * the test states.
  */
-
 import assert from 'assert';
 import * as JSONC from 'jsonc-parser';
+import * as path from 'path';
 import Char from 'typescript-char';
 import {
-    AnnotatedTextEdit,
     CancellationToken,
-    ChangeAnnotation,
     CodeAction,
     Command,
     CompletionItem,
-    CreateFile,
-    DeleteFile,
     Diagnostic,
     DocumentHighlight,
     DocumentHighlightKind,
     ExecuteCommandParams,
     MarkupContent,
     MarkupKind,
-    OptionalVersionedTextDocumentIdentifier,
-    RenameFile,
-    TextDocumentEdit,
     TextEdit,
     WorkspaceEdit,
 } from 'vscode-languageserver';
 
+import { BackgroundAnalysisProgramFactory } from '../../../analyzer/backgroundAnalysisProgram';
 import { ImportResolver, ImportResolverFactory } from '../../../analyzer/importResolver';
 import { findNodeByOffset } from '../../../analyzer/parseTreeUtils';
 import { Program } from '../../../analyzer/program';
@@ -90,6 +84,7 @@ import {
     TestCancellationToken,
 } from './fourSlashTypes';
 import { TestFeatures, TestLanguageService } from './testLanguageService';
+import { verifyWorkspaceEdit } from './workspaceEditTestUtils';
 
 export interface TextChange {
     span: TextRange;
@@ -98,6 +93,7 @@ export interface TextChange {
 
 export interface HostSpecificFeatures {
     importResolverFactory: ImportResolverFactory;
+    backgroundAnalysisProgramFactory: BackgroundAnalysisProgramFactory;
 
     runIndexer(workspace: WorkspaceServiceInstance, noStdLib: boolean, options?: string): void;
     getCodeActionsForPosition(
@@ -165,6 +161,7 @@ export class TestState {
         const service = this._createAnalysisService(
             this.console,
             this._hostSpecificFeatures.importResolverFactory,
+            this._hostSpecificFeatures.backgroundAnalysisProgramFactory,
             configOptions
         );
 
@@ -180,7 +177,6 @@ export class TestState {
             disableWorkspaceSymbol: false,
             isInitialized: createDeferred<boolean>(),
             searchPathsToWatch: [],
-            owns: (f) => true,
         };
 
         const indexer = toBoolean(testData.globalOptions[GlobalMetadataOptionNames.indexer]);
@@ -214,6 +210,10 @@ export class TestState {
 
     get program(): Program {
         return this.workspace.serviceInstance.test_program;
+    }
+
+    dispose() {
+        this.workspace.serviceInstance.dispose();
     }
 
     cwd() {
@@ -251,28 +251,11 @@ export class TestState {
     }
 
     getMarkerName(m: Marker): string {
-        let found: string | undefined;
-        this.testData.markerPositions.forEach((marker, name) => {
-            if (marker === m) {
-                found = name;
-            }
-        });
-
-        assert.ok(found);
-        return found!;
+        return getMarkerName(this.testData, m);
     }
 
     getMarkerByName(markerName: string) {
-        const markerPos = this.testData.markerPositions.get(markerName);
-        if (markerPos === undefined) {
-            throw new Error(
-                `Unknown marker "${markerName}" Available markers: ${this.getMarkerNames()
-                    .map((m) => '"' + m + '"')
-                    .join(', ')}`
-            );
-        } else {
-            return markerPos;
-        }
+        return getMarkerByName(this.testData, markerName);
     }
 
     getMarkers(): Marker[] {
@@ -281,7 +264,7 @@ export class TestState {
     }
 
     getMarkerNames(): string[] {
-        return [...this.testData.markerPositions.keys()];
+        return getMarkerNames(this.testData);
     }
 
     getPositionRange(markerString: string) {
@@ -321,6 +304,10 @@ export class TestState {
 
     getDirectoryPath(path: string) {
         return getDirectoryPath(path);
+    }
+
+    getPathSep() {
+        return path.sep;
     }
 
     goToPosition(positionOrLineAndColumn: number | Position) {
@@ -534,7 +521,7 @@ export class TestState {
     }
 
     verifyDiagnostics(map?: { [marker: string]: { category: string; message: string } }): void {
-        this._analyze();
+        this.analyze();
 
         // organize things per file
         const resultPerFile = this._getDiagnosticsPerFile();
@@ -579,9 +566,11 @@ export class TestState {
                         ? result.warnings
                         : category === 'information'
                         ? result.information
+                        : category === 'none'
+                        ? []
                         : this.raiseError(`unexpected category ${category}`);
 
-                if (expected.length !== actual.length) {
+                if (expected.length !== actual.length && category !== 'none') {
                     this.raiseError(
                         `contains unexpected result - expected: ${stringify(expected)}, actual: ${stringify(actual)}`
                     );
@@ -597,15 +586,20 @@ export class TestState {
                         return this._deepEqual(diagnosticSpan, rangeSpan);
                     });
 
-                    if (matches.length === 0) {
+                    // If the map is provided, it might say
+                    // a marker should have none.
+                    const name = map ? this.getMarkerName(range.marker!) : '';
+                    const message = map ? map[name].message : undefined;
+                    const expectMatches = !!message;
+
+                    if (expectMatches && matches.length === 0) {
                         this.raiseError(`doesn't contain expected range: ${stringify(range)}`);
+                    } else if (!expectMatches && matches.length !== 0) {
+                        this.raiseError(`${name} should not contain any matches`);
                     }
 
                     // if map is provided, check message as well
-                    if (map) {
-                        const name = this.getMarkerName(range.marker!);
-                        const message = map[name].message;
-
+                    if (message) {
                         if (matches.filter((d) => message === d.message).length !== 1) {
                             this.raiseError(
                                 `message doesn't match: ${message} of ${name} - ${stringify(
@@ -653,7 +647,7 @@ export class TestState {
     ): Promise<any> {
         // make sure we don't use cache built from other tests
         this.workspace.serviceInstance.invalidateAndForceReanalysis();
-        this._analyze();
+        this.analyze();
 
         for (const range of this.getRanges()) {
             const name = this.getMarkerName(range.marker!);
@@ -719,7 +713,7 @@ export class TestState {
     }
 
     async verifyCommand(command: Command, files: { [filePath: string]: string }): Promise<any> {
-        this._analyze();
+        this.analyze();
 
         const commandResult = await this._hostSpecificFeatures.execute(
             new TestLanguageService(this.workspace, this.console, this.fs),
@@ -748,155 +742,7 @@ export class TestState {
     }
 
     verifyWorkspaceEdit(expected: WorkspaceEdit, actual: WorkspaceEdit) {
-        if (actual.changes) {
-            this._verifyTextEditMap(expected.changes!, actual.changes);
-        } else {
-            assert(!expected.changes);
-        }
-
-        if (actual.documentChanges) {
-            this._verifyDocumentEdits(expected.documentChanges!, actual.documentChanges);
-        } else {
-            assert(!expected.documentChanges);
-        }
-
-        if (actual.changeAnnotations) {
-            this._verifyChangeAnnotations(expected.changeAnnotations!, actual.changeAnnotations);
-        } else {
-            assert(!expected.changeAnnotations);
-        }
-    }
-
-    private _verifyChangeAnnotations(
-        expected: { [id: string]: ChangeAnnotation },
-        actual: { [id: string]: ChangeAnnotation }
-    ) {
-        assert.strictEqual(Object.entries(expected).length, Object.entries(actual).length);
-
-        for (const key of Object.keys(expected)) {
-            const expectedAnnotation = expected[key];
-            const actualAnnotation = actual[key];
-
-            // We need to improve it to test localized strings.
-            assert.strictEqual(expectedAnnotation.label, actualAnnotation.label);
-            assert.strictEqual(expectedAnnotation.description, actualAnnotation.description);
-
-            assert.strictEqual(expectedAnnotation.needsConfirmation, actualAnnotation.needsConfirmation);
-        }
-    }
-
-    private _textDocumentAreSame(
-        expected: OptionalVersionedTextDocumentIdentifier,
-        actual: OptionalVersionedTextDocumentIdentifier
-    ) {
-        return expected.version === actual.version && expected.uri === actual.uri;
-    }
-
-    private _verifyDocumentEdits(
-        expected: (TextDocumentEdit | CreateFile | RenameFile | DeleteFile)[],
-        actual: (TextDocumentEdit | CreateFile | RenameFile | DeleteFile)[]
-    ) {
-        assert.strictEqual(expected.length, actual.length);
-
-        for (const op of expected) {
-            assert(
-                actual.some((a) => {
-                    const expectedKind = TextDocumentEdit.is(op) ? 'edit' : op.kind;
-                    const actualKind = TextDocumentEdit.is(a) ? 'edit' : a.kind;
-                    if (expectedKind !== actualKind) {
-                        return false;
-                    }
-
-                    switch (expectedKind) {
-                        case 'edit': {
-                            const expectedEdit = op as TextDocumentEdit;
-                            const actualEdit = a as TextDocumentEdit;
-
-                            if (!this._textDocumentAreSame(expectedEdit.textDocument, actualEdit.textDocument)) {
-                                return false;
-                            }
-
-                            return this._textEditsAreSame(expectedEdit.edits, actualEdit.edits);
-                        }
-                        case 'create': {
-                            const expectedOp = op as CreateFile;
-                            const actualOp = a as CreateFile;
-                            return (
-                                expectedOp.kind === actualOp.kind &&
-                                expectedOp.annotationId === actualOp.annotationId &&
-                                expectedOp.uri === actualOp.uri &&
-                                expectedOp.options?.ignoreIfExists === actualOp.options?.ignoreIfExists &&
-                                expectedOp.options?.overwrite === actualOp.options?.overwrite
-                            );
-                        }
-                        case 'rename': {
-                            const expectedOp = op as RenameFile;
-                            const actualOp = a as RenameFile;
-                            return (
-                                expectedOp.kind === actualOp.kind &&
-                                expectedOp.annotationId === actualOp.annotationId &&
-                                expectedOp.oldUri === actualOp.oldUri &&
-                                expectedOp.newUri === actualOp.newUri &&
-                                expectedOp.options?.ignoreIfExists === actualOp.options?.ignoreIfExists &&
-                                expectedOp.options?.overwrite === actualOp.options?.overwrite
-                            );
-                        }
-                        case 'delete': {
-                            const expectedOp = op as DeleteFile;
-                            const actualOp = a as DeleteFile;
-                            return (
-                                expectedOp.annotationId === actualOp.annotationId &&
-                                expectedOp.kind === actualOp.kind &&
-                                expectedOp.uri === actualOp.uri &&
-                                expectedOp.options?.ignoreIfNotExists === actualOp.options?.ignoreIfNotExists &&
-                                expectedOp.options?.recursive === actualOp.options?.recursive
-                            );
-                        }
-                        default:
-                            debug.assertNever(expectedKind);
-                    }
-                })
-            );
-        }
-    }
-
-    private _verifyTextEditMap(expected: { [uri: string]: TextEdit[] }, actual: { [uri: string]: TextEdit[] }) {
-        assert.strictEqual(Object.entries(expected).length, Object.entries(actual).length);
-
-        for (const key of Object.keys(expected)) {
-            assert(this._textEditsAreSame(expected[key], actual[key]));
-        }
-    }
-
-    private _textEditsAreSame(
-        expectedEdits: (TextEdit | AnnotatedTextEdit)[],
-        actualEdits: (TextEdit | AnnotatedTextEdit)[]
-    ) {
-        if (expectedEdits.length !== actualEdits.length) {
-            return false;
-        }
-
-        for (const edit of expectedEdits) {
-            if (!actualEdits.some((a) => this._textEditAreSame(edit, a))) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private _textEditAreSame(expected: TextEdit, actual: TextEdit) {
-        if (!rangesAreEqual(expected.range, actual.range)) {
-            return false;
-        }
-
-        if (expected.newText !== actual.newText) {
-            return false;
-        }
-
-        const expectedAnnotation = AnnotatedTextEdit.is(expected) ? expected.annotationId : '';
-        const actualAnnotation = AnnotatedTextEdit.is(actual) ? actual.annotationId : '';
-        return expectedAnnotation === actualAnnotation;
+        return verifyWorkspaceEdit(expected, actual);
     }
 
     async verifyInvokeCodeAction(
@@ -905,7 +751,7 @@ export class TestState {
         },
         verifyCodeActionCount?: boolean
     ): Promise<any> {
-        this._analyze();
+        this.analyze();
 
         for (const range of this.getRanges()) {
             const name = this.getMarkerName(range.marker!);
@@ -1058,7 +904,7 @@ export class TestState {
         },
         abbrMap?: { [abbr: string]: AbbreviationInfo }
     ): Promise<void> {
-        this._analyze();
+        this.analyze();
 
         for (const marker of this.getMarkers()) {
             const markerName = this.getMarkerName(marker);
@@ -1228,7 +1074,7 @@ export class TestState {
             };
         }
     ): void {
-        this._analyze();
+        this.analyze();
 
         for (const marker of this.getMarkers()) {
             const fileName = marker.fileName;
@@ -1297,7 +1143,7 @@ export class TestState {
             references: DocumentRange[];
         };
     }) {
-        this._analyze();
+        this.analyze();
 
         for (const marker of this.getMarkers()) {
             const fileName = marker.fileName;
@@ -1347,7 +1193,7 @@ export class TestState {
             references: DocumentHighlight[];
         };
     }) {
-        this._analyze();
+        this.analyze();
 
         for (const name of Object.keys(map)) {
             const marker = this.getMarkerByName(name);
@@ -1379,7 +1225,7 @@ export class TestState {
         },
         filter: DefinitionFilter = DefinitionFilter.All
     ) {
-        this._analyze();
+        this.analyze();
 
         for (const marker of this.getMarkers()) {
             const fileName = marker.fileName;
@@ -1407,7 +1253,7 @@ export class TestState {
             definitions: DocumentRange[];
         };
     }) {
-        this._analyze();
+        this.analyze();
 
         for (const marker of this.getMarkers()) {
             const fileName = marker.fileName;
@@ -1436,7 +1282,7 @@ export class TestState {
             changes: FileEditAction[];
         };
     }) {
-        this._analyze();
+        this.analyze();
 
         for (const marker of this.getMarkers()) {
             const fileName = marker.fileName;
@@ -1780,7 +1626,7 @@ export class TestState {
         return position <= editStart ? position : position < editEnd ? -1 : position + length - +(editEnd - editStart);
     }
 
-    private _analyze() {
+    public analyze() {
         while (this.program.analyze()) {
             // Continue to call analyze until it completes. Since we're not
             // specifying a timeout, it should complete the first time.
@@ -1812,6 +1658,7 @@ export class TestState {
     private _createAnalysisService(
         nullConsole: ConsoleInterface,
         importResolverFactory: ImportResolverFactory,
+        backgroundAnalysisProgramFactory: BackgroundAnalysisProgramFactory,
         configOptions: ConfigOptions
     ) {
         // we do not initiate automatic analysis or file watcher in test.
@@ -1819,6 +1666,7 @@ export class TestState {
             console: nullConsole,
             hostFactory: () => testAccessHost,
             importResolverFactory,
+            backgroundAnalysisProgramFactory,
             configOptions,
         });
 
@@ -2016,6 +1864,35 @@ export function createVfsInfoFromFourSlashData(projectRoot: string, testData: Fo
         }
     }
     return { files, sourceFileNames, projectRoot, ignoreCase, rawConfigJson };
+}
+
+export function getMarkerName(testData: FourSlashData, markerToFind: Marker) {
+    let found: string | undefined;
+    testData.markerPositions.forEach((marker, name) => {
+        if (marker === markerToFind) {
+            found = name;
+        }
+    });
+
+    assert.ok(found);
+    return found!;
+}
+
+export function getMarkerByName(testData: FourSlashData, markerName: string) {
+    const markerPos = testData.markerPositions.get(markerName);
+    if (markerPos === undefined) {
+        throw new Error(
+            `Unknown marker "${markerName}" Available markers: ${getMarkerNames(testData)
+                .map((m) => '"' + m + '"')
+                .join(', ')}`
+        );
+    } else {
+        return markerPos;
+    }
+}
+
+export function getMarkerNames(testData: FourSlashData): string[] {
+    return [...testData.markerPositions.keys()];
 }
 
 function isConfig(file: FourSlashFile, ignoreCase: boolean): boolean {

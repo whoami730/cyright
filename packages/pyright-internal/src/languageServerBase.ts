@@ -79,9 +79,10 @@ import { attachWorkDone, ResultProgressReporter } from 'vscode-languageserver/li
 
 import { AnalysisResults } from './analyzer/analysis';
 import { BackgroundAnalysisProgram } from './analyzer/backgroundAnalysisProgram';
+import { CacheManager } from './analyzer/cacheManager';
 import { ImportResolver } from './analyzer/importResolver';
 import { MaxAnalysisTime } from './analyzer/program';
-import { AnalyzerService, configFileNames } from './analyzer/service';
+import { AnalyzerService, configFileNames, getNextServiceId } from './analyzer/service';
 import { IPythonMode } from './analyzer/sourceFile';
 import type { BackgroundAnalysisBase } from './backgroundAnalysisBase';
 import { CommandResult } from './commands/commandResult';
@@ -169,7 +170,6 @@ export interface WorkspaceServiceInstance {
     disableWorkspaceSymbol: boolean;
     isInitialized: Deferred<boolean>;
     searchPathsToWatch: string[];
-    owns(filePath: string): boolean;
 }
 
 export interface MessageAction {
@@ -191,7 +191,7 @@ export interface WindowInterface {
 export interface LanguageServerInterface {
     getWorkspaceForFile(filePath: string): Promise<WorkspaceServiceInstance>;
     getSettings(workspace: WorkspaceServiceInstance): Promise<ServerSettings>;
-    createBackgroundAnalysis(): BackgroundAnalysisBase | undefined;
+    createBackgroundAnalysis(serviceId: string): BackgroundAnalysisBase | undefined;
     reanalyze(): void;
     restart(): void;
     decodeTextDocumentUri(uriString: string): string;
@@ -250,6 +250,7 @@ const nullProgressReporter = attachWorkDone(undefined as any, /* params */ undef
 export abstract class LanguageServerBase implements LanguageServerInterface {
     protected _defaultClientConfig: any;
     protected _workspaceMap: WorkspaceMap;
+    protected _cacheManager: CacheManager;
 
     // We support running only one "find all reference" at a time.
     private _pendingFindAllRefsCancellationSource: CancellationTokenSource | undefined;
@@ -312,6 +313,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
 
         this.console.info(`Server root directory: ${_serverOptions.rootDirectory}`);
 
+        this._cacheManager = new CacheManager();
         this._workspaceMap = this._serverOptions.workspaceMap;
 
         this._serviceFS = new PyrightFileSystem(this._serverOptions.fileSystem);
@@ -339,7 +341,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
         return this._uriParser.decodeTextDocumentUri(uriString);
     }
 
-    abstract createBackgroundAnalysis(): BackgroundAnalysisBase | undefined;
+    abstract createBackgroundAnalysis(serviceId: string): BackgroundAnalysisBase | undefined;
 
     protected abstract executeCommand(params: ExecuteCommandParams, token: CancellationToken): Promise<any>;
 
@@ -401,12 +403,14 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
     protected abstract createImportResolver(fs: FileSystem, options: ConfigOptions, host: Host): ImportResolver;
 
     protected createBackgroundAnalysisProgram(
+        serviceId: string,
         console: ConsoleInterface,
         configOptions: ConfigOptions,
         importResolver: ImportResolver,
         extension?: LanguageServiceExtension,
         backgroundAnalysis?: BackgroundAnalysisBase,
-        maxAnalysisTime?: MaxAnalysisTime
+        maxAnalysisTime?: MaxAnalysisTime,
+        cacheManager?: CacheManager
     ): BackgroundAnalysisProgram {
         return new BackgroundAnalysisProgram(
             console,
@@ -414,7 +418,9 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             importResolver,
             extension,
             backgroundAnalysis,
-            maxAnalysisTime
+            maxAnalysisTime,
+            /* disableChecker */ undefined,
+            cacheManager
         );
     }
 
@@ -440,20 +446,32 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
     ): AnalyzerService {
         this.console.info(`Starting service instance "${name}"`);
 
+        const serviceId = getNextServiceId(name);
         const service = new AnalyzerService(name, services?.fs ?? this._serviceFS, {
             console: this.console,
             hostFactory: this.createHost.bind(this),
             importResolverFactory: this.createImportResolver.bind(this),
             extension: this._serverOptions.extension,
-            backgroundAnalysis: services ? services.backgroundAnalysis : this.createBackgroundAnalysis(),
+            backgroundAnalysis: services ? services.backgroundAnalysis : this.createBackgroundAnalysis(serviceId),
             maxAnalysisTime: this._serverOptions.maxAnalysisTimeInForeground,
             backgroundAnalysisProgramFactory: this.createBackgroundAnalysisProgram.bind(this),
             cancellationProvider: this._serverOptions.cancellationProvider,
             libraryReanalysisTimeProvider,
+            cacheManager: this._cacheManager,
+            serviceId,
         });
 
         service.setCompletionCallback((results) => this.onAnalysisCompletedHandler(service.fs, results));
         return service;
+    }
+
+    async test_getWorkspaces() {
+        const workspaces = [...this._workspaceMap.values()];
+        for (const workspace of workspaces) {
+            await workspace.isInitialized.promise;
+        }
+
+        return workspaces;
     }
 
     async getWorkspaceForFile(filePath: string): Promise<WorkspaceServiceInstance> {
@@ -1081,12 +1099,6 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             token
         );
 
-        // We only allow renaming symbol defined in the files this workspace owns.
-        // This is to make sure we don't rename files across workspaces in multiple workspaces context.
-        if (result && result.declarations.some((d) => d.path && !workspace.owns(d.path))) {
-            return null;
-        }
-
         return result?.range ?? null;
     }
 
@@ -1353,7 +1365,6 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
         rootPath: string,
         path: string,
         kinds: string[] = [WellKnownWorkspaceKinds.Regular],
-        owns?: (filePath: string) => boolean,
         services?: WorkspaceServices
     ): WorkspaceServiceInstance {
         // 5 seconds default
@@ -1371,7 +1382,6 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
                 : () => defaultBackOffTime;
 
         const rootUri = workspaceFolder?.uri ?? '';
-        owns = owns ?? ((f) => f.startsWith(rootPath));
 
         return {
             workspaceName: workspaceFolder?.name ?? '',
@@ -1389,7 +1399,6 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             disableWorkspaceSymbol: false,
             isInitialized: createDeferred<boolean>(),
             searchPathsToWatch: [],
-            owns,
         };
     }
 
@@ -1616,9 +1625,8 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
     }
 
     protected getDocumentationUrlForDiagnosticRule(rule: string): string | undefined {
-        // For now, return the same URL for all rules. We can separate these
-        // in the future.
-        return 'https://github.com/microsoft/pyright/blob/main/docs/configuration.md';
+        // Configuration.md is configured to have a link for every rule name.
+        return `https://github.com/microsoft/pyright/blob/main/docs/configuration.md#${rule}`;
     }
 
     protected abstract createProgressReporter(): ProgressReporter;

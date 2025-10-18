@@ -548,7 +548,7 @@ test('DataClass12', () => {
 test('DataClass13', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['dataclass13.py']);
 
-    TestUtils.validateResults(analysisResults, 3);
+    TestUtils.validateResults(analysisResults, 4);
 });
 
 test('DataClass14', () => {
@@ -613,6 +613,12 @@ test('DataClass23', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['dataclass23.py']);
 
     TestUtils.validateResults(analysisResults, 0);
+});
+
+test('DataClass24', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['dataclass24.py']);
+
+    TestUtils.validateResults(analysisResults, 1);
 });
 
 test('DataClassPostInit1', () => {

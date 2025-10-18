@@ -40,6 +40,7 @@ test('Builtins1', () => {
         'AssertionError',
         'AttributeError',
         'BaseException',
+        'BaseExceptionGroup',
         'BlockingIOError',
         'BrokenPipeError',
         'BufferError',
@@ -55,6 +56,7 @@ test('Builtins1', () => {
         'EncodingWarning',
         'EnvironmentError',
         'Exception',
+        'ExceptionGroup',
         'FileExistsError',
         'FileNotFoundError',
         'FloatingPointError',
@@ -223,6 +225,11 @@ test('Builtins1', () => {
             }
         }
     }
+});
+
+test('Builtins2', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['builtins2.py']);
+    TestUtils.validateResults(analysisResults, 0);
 });
 
 test('Complex1', () => {
@@ -396,6 +403,12 @@ test('TypeNarrowingIn1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeNarrowingIn1.py']);
 
     TestUtils.validateResults(analysisResults, 2);
+});
+
+test('TypeNarrowingIn2', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeNarrowingIn2.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
 });
 
 test('TypeNarrowingLiteralMember1', () => {
@@ -615,7 +628,7 @@ test('Call1', () => {
 test('Call2', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['call2.py']);
 
-    TestUtils.validateResults(analysisResults, 12);
+    TestUtils.validateResults(analysisResults, 13);
 });
 
 test('Call3', () => {
@@ -1296,7 +1309,7 @@ test('TotalOrdering1', () => {
 test('TupleUnpack1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['tupleUnpack1.py']);
 
-    TestUtils.validateResults(analysisResults, 5);
+    TestUtils.validateResults(analysisResults, 6);
 });
 
 test('TupleUnpack2', () => {
@@ -1328,7 +1341,7 @@ test('PseudoGeneric1', () => {
 test('LiteralString1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['literalString1.py']);
 
-    TestUtils.validateResults(analysisResults, 7);
+    TestUtils.validateResults(analysisResults, 8);
 });
 
 test('LiteralString2', () => {
@@ -1374,13 +1387,13 @@ test('StaticExpressions1', () => {
     configOptions.defaultPythonPlatform = 'windows';
 
     const analysisResults1 = TestUtils.typeAnalyzeSampleFiles(['staticExpressions1.py'], configOptions);
-    TestUtils.validateResults(analysisResults1, 6);
+    TestUtils.validateResults(analysisResults1, 9);
 
     configOptions.defaultPythonVersion = PythonVersion.V3_11;
     configOptions.defaultPythonPlatform = 'Linux';
 
     const analysisResults2 = TestUtils.typeAnalyzeSampleFiles(['staticExpressions1.py'], configOptions);
-    TestUtils.validateResults(analysisResults2, 3);
+    TestUtils.validateResults(analysisResults2, 6);
 
     configOptions.defineConstant.set('DEFINED_TRUE', true);
     configOptions.defineConstant.set('DEFINED_FALSE', false);

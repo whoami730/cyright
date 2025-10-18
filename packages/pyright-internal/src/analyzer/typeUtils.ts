@@ -58,6 +58,7 @@ import {
     TypeVarType,
     UnionType,
     UnknownType,
+    Variance,
     WildcardTypeVarScopeId,
 } from './types';
 import { TypeVarContext } from './typeVarContext';
@@ -284,11 +285,14 @@ export function getParameterListDetails(type: FunctionType): ParameterListDetail
         param: FunctionParameter,
         index: number,
         typeOverride?: Type,
-        defaultArgTypeOverride?: Type
+        defaultArgTypeOverride?: Type,
+        sourceOverride?: ParameterSource
     ) => {
         if (param.name) {
             let source: ParameterSource;
-            if (param.category === ParameterCategory.VarArgList) {
+            if (sourceOverride !== undefined) {
+                source = sourceOverride;
+            } else if (param.category === ParameterCategory.VarArgList) {
                 source = ParameterSource.PositionOnly;
             } else if (sawKeywordOnlySeparator) {
                 source = ParameterSource.KeywordOnly;
@@ -337,14 +341,29 @@ export function getParameterListDetails(type: FunctionType): ParameterListDetail
                             type: tupleArg.type,
                             hasDeclaredType: true,
                         },
-                        tupleIndex,
-                        tupleArg.type
+                        index,
+                        tupleArg.type,
+                        /* defaultArgTypeOverride */ undefined,
+                        ParameterSource.PositionOnly
                     );
+
+                    if (category === ParameterCategory.Simple) {
+                        result.positionParamCount++;
+                    }
 
                     if (tupleIndex > 0 && addToPositionalOnly) {
                         result.positionOnlyParamCount++;
                     }
                 });
+
+                // Normally, a VarArgList parameter (either named or as an unnamed separator)
+                // would signify the start of keyword-only parameters. However, we can construct
+                // callable signatures that defy this rule by using Callable and TypeVarTuples
+                // or unpacked tuples.
+                if (!sawKeywordOnlySeparator && (positionOnlyIndex < 0 || index >= positionOnlyIndex)) {
+                    result.firstKeywordOnlyIndex = result.params.length;
+                    sawKeywordOnlySeparator = true;
+                }
             } else {
                 if (param.name && result.argsIndex === undefined) {
                     result.argsIndex = result.params.length;
@@ -371,23 +390,28 @@ export function getParameterListDetails(type: FunctionType): ParameterListDetail
         } else if (param.category === ParameterCategory.VarArgDictionary) {
             sawKeywordOnlySeparator = true;
 
+            const paramType = FunctionType.getEffectiveParameterType(type, index);
+
             // Is this an unpacked TypedDict? If so, expand the entries.
-            if (isClassInstance(param.type) && isUnpackedClass(param.type) && param.type.details.typedDictEntries) {
+            if (isClassInstance(paramType) && isUnpackedClass(paramType) && paramType.details.typedDictEntries) {
                 if (result.firstKeywordOnlyIndex === undefined) {
                     result.firstKeywordOnlyIndex = result.params.length;
                 }
 
-                param.type.details.typedDictEntries.forEach((entry, name) => {
+                const typedDictType = paramType;
+                paramType.details.typedDictEntries.forEach((entry, name) => {
+                    const specializedParamType = partiallySpecializeType(entry.valueType, typedDictType);
+
                     addVirtualParameter(
                         {
                             category: ParameterCategory.Simple,
                             name,
-                            type: entry.valueType,
+                            type: specializedParamType,
                             hasDeclaredType: true,
                             hasDefault: !entry.isRequired,
                         },
                         index,
-                        entry.valueType
+                        specializedParamType
                     );
                 });
 
@@ -772,11 +796,7 @@ export function getTypeCondition(type: Type): TypeCondition[] | undefined {
 // Indicates whether the specified type is a recursive type alias
 // placeholder that has not yet been resolved.
 export function isTypeAliasPlaceholder(type: Type): type is TypeVarType {
-    if (!isTypeVar(type)) {
-        return false;
-    }
-
-    return !!type.details.recursiveTypeAliasName && !type.details.boundType;
+    return isTypeVar(type) && TypeVarType.isTypeAliasPlaceholder(type);
 }
 
 // Determines whether the type alias placeholder is used directly
@@ -822,6 +842,10 @@ export function transformPossibleRecursiveTypeAlias(type: Type | undefined): Typ
                 getTypeVarScopeId(type)
             );
             return applySolvedTypeVars(unspecializedType, typeVarContext);
+        }
+
+        if (isUnion(type) && type.includesTypeAliasPlaceholder) {
+            return mapSubtypes(type, (subtype) => transformPossibleRecursiveTypeAlias(subtype));
         }
     }
 
@@ -2083,9 +2107,9 @@ export function explodeGenericClass(classType: ClassType) {
 
 // If the type is a union of same-sized tuples, these are combined into
 // a single tuple with that size. Otherwise, returns undefined.
-export function combineSameSizedTuples(type: Type, tupleType: Type | undefined) {
+export function combineSameSizedTuples(type: Type, tupleType: Type | undefined): Type {
     if (!tupleType || !isInstantiableClass(tupleType) || isUnboundedTupleClass(tupleType)) {
-        return undefined;
+        return type;
     }
 
     let tupleEntries: Type[][] | undefined;
@@ -2127,7 +2151,7 @@ export function combineSameSizedTuples(type: Type, tupleType: Type | undefined) 
     });
 
     if (!isValid || !tupleEntries) {
-        return undefined;
+        return type;
     }
 
     return convertToInstance(
@@ -2149,7 +2173,16 @@ export function specializeTupleClass(
     isTypeArgumentExplicit = true,
     isUnpackedTuple = false
 ): ClassType {
-    let combinedTupleType = combineTypes(typeArgs.map((t) => t.type));
+    let combinedTupleType = combineTypes(
+        typeArgs.map((t) => {
+            if (isTypeVar(t.type) && t.type.isVariadicUnpacked && !t.type.isVariadicInUnion) {
+                // Treat the unpacked TypeVarTuple as a union.
+                return TypeVarType.cloneForUnpacked(t.type, /* isInUnion */ true);
+            }
+
+            return t.type;
+        })
+    );
 
     // An empty tuple has an effective type of Any.
     if (isNever(combinedTupleType)) {
@@ -2241,10 +2274,22 @@ export function getGeneratorTypeArgs(returnType: Type): Type[] | undefined {
 
 export function requiresTypeArguments(classType: ClassType) {
     if (classType.details.typeParameters.length > 0) {
+        const firstTypeParam = classType.details.typeParameters[0];
+
         // If there are type parameters, type arguments are needed.
         // The exception is if type parameters have been synthesized
         // for classes that have untyped constructors.
-        return !classType.details.typeParameters[0].details.isSynthesized;
+        if (firstTypeParam.details.isSynthesized) {
+            return false;
+        }
+
+        // If the first type parameter has a default type, then no
+        // type arguments are needed.
+        if (firstTypeParam.details.defaultType) {
+            return false;
+        }
+
+        return true;
     }
 
     // There are a few built-in special classes that require
@@ -2371,6 +2416,43 @@ export function requiresSpecialization(
     }
 
     return false;
+}
+
+// Determines if the variance of the type argument for a generic class is compatible
+// With the declared variance of the corresponding type parameter.
+export function isVarianceOfTypeArgumentCompatible(type: Type, typeParamVariance: Variance): boolean {
+    if (typeParamVariance === Variance.Unknown || typeParamVariance === Variance.Auto) {
+        return true;
+    }
+
+    if (isTypeVar(type) && !type.details.isParamSpec && !type.details.isVariadic) {
+        const typeArgVariance = type.details.declaredVariance;
+
+        if (typeArgVariance === Variance.Contravariant || typeArgVariance === Variance.Covariant) {
+            return typeArgVariance === typeParamVariance;
+        }
+    } else if (isClassInstance(type)) {
+        if (type.details.typeParameters && type.details.typeParameters.length > 0) {
+            return type.details.typeParameters.every((typeParam, index) => {
+                let typeArgType: Type | undefined;
+
+                if (typeParam.details.isParamSpec || typeParam.details.isVariadic) {
+                    return true;
+                }
+
+                if (type.typeArguments && index < type.typeArguments.length) {
+                    typeArgType = type.typeArguments[index];
+                }
+
+                const effectiveVariance =
+                    typeParam.details.declaredVariance === Variance.Invariant ? Variance.Invariant : typeParamVariance;
+
+                return isVarianceOfTypeArgumentCompatible(typeArgType ?? UnknownType.create(), effectiveVariance);
+            });
+        }
+    }
+
+    return true;
 }
 
 // Computes the method resolution ordering for a class whose base classes
@@ -3032,7 +3114,7 @@ class TypeVarTransformer {
         }
 
         // Unpack the tuple and synthesize a new function in the process.
-        const newFunctionType = FunctionType.createSynthesizedInstance('');
+        const newFunctionType = FunctionType.createSynthesizedInstance('', functionType.details.flags);
         let insertKeywordOnlySeparator = false;
         let swallowPositionOnlySeparator = false;
 
@@ -3147,8 +3229,13 @@ class ApplySolvedTypeVarsTransformer extends TypeVarTransformer {
             }
 
             // If this typeVar is in scope for what we're solving but the type
-            // var map doesn't contain any entry for it, replace with Unknown.
+            // var map doesn't contain any entry for it, replace with the
+            // default or Unknown.
             if (this._unknownIfNotFound && !this._typeVarContext.hasSolveForScope(WildcardTypeVarScopeId)) {
+                if (typeVar.details.defaultType) {
+                    return typeVar.details.defaultType;
+                }
+
                 return UnknownType.create();
             }
         }
@@ -3185,8 +3272,16 @@ class ApplySolvedTypeVarsTransformer extends TypeVarTransformer {
         return postTransform;
     }
 
-    override transformVariadicTypeVar(typeVar: TypeVarType) {
+    override transformVariadicTypeVar(typeVar: TypeVarType): TupleTypeArgument[] | undefined {
         if (!typeVar.scopeId || !this._typeVarContext.hasSolveForScope(typeVar.scopeId)) {
+            if (
+                typeVar.details.defaultType &&
+                isClassInstance(typeVar.details.defaultType) &&
+                typeVar.details.defaultType.tupleTypeArguments
+            ) {
+                return typeVar.details.defaultType.tupleTypeArguments;
+            }
+
             return undefined;
         }
 
@@ -3204,6 +3299,19 @@ class ApplySolvedTypeVarsTransformer extends TypeVarTransformer {
         }
 
         if (this._unknownIfNotFound && !this._typeVarContext.hasSolveForScope(WildcardTypeVarScopeId)) {
+            // Use the default value if there is one.
+            if (paramSpec.details.defaultType && isFunction(paramSpec.details.defaultType)) {
+                const funcType = paramSpec.details.defaultType;
+
+                return {
+                    flags: funcType.details.flags,
+                    parameters: funcType.details.parameters,
+                    typeVarScopeId: funcType.details.typeVarScopeId,
+                    docString: funcType.details.docString,
+                    paramSpec: funcType.details.paramSpec,
+                };
+            }
+
             // Convert to the ParamSpec equivalent of "Unknown".
             const paramSpecValue: ParamSpecValue = {
                 flags: FunctionTypeFlags.SkipArgsKwargsCompatibilityCheck,
