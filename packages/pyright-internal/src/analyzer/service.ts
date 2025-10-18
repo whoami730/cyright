@@ -60,12 +60,13 @@ import { timingStats } from '../common/timing';
 import { AutoImportOptions } from '../languageService/autoImporter';
 import { AbbreviationMap, CompletionOptions, CompletionResultsList } from '../languageService/completionProvider';
 import { DefinitionFilter } from '../languageService/definitionProvider';
-import { IndexResults, WorkspaceSymbolCallback } from '../languageService/documentSymbolProvider';
+import { WorkspaceSymbolCallback } from '../languageService/documentSymbolProvider';
 import { HoverResults } from '../languageService/hoverProvider';
 import { ReferenceCallback } from '../languageService/referencesProvider';
 import { SignatureHelpResults } from '../languageService/signatureHelpProvider';
 import { AnalysisCompleteCallback } from './analysis';
 import { BackgroundAnalysisProgram, BackgroundAnalysisProgramFactory } from './backgroundAnalysisProgram';
+import { CacheManager } from './cacheManager';
 import {
     createImportedModuleDescriptor,
     ImportResolver,
@@ -99,6 +100,15 @@ export interface AnalyzerServiceOptions {
     backgroundAnalysisProgramFactory?: BackgroundAnalysisProgramFactory;
     cancellationProvider?: CancellationProvider;
     libraryReanalysisTimeProvider?: () => number;
+    cacheManager?: CacheManager;
+    serviceId?: string;
+}
+
+// Hold uniqueId for this service. It can be used to distinguish each service later.
+let _nextServiceId = 1;
+
+export function getNextServiceId(name: string) {
+    return `${name}_${_nextServiceId++}`;
 }
 
 export class AnalyzerService {
@@ -126,9 +136,11 @@ export class AnalyzerService {
 
     constructor(instanceName: string, fs: FileSystem, options: AnalyzerServiceOptions) {
         this._instanceName = instanceName;
+
         this._executionRootPath = '';
         this._options = options;
 
+        this._options.serviceId = this._options.serviceId ?? getNextServiceId(instanceName);
         this._options.console = options.console || new StandardConsole();
         this._options.importResolverFactory = options.importResolverFactory ?? AnalyzerService.createImportResolver;
         this._options.cancellationProvider = options.cancellationProvider ?? new DefaultCancellationProvider();
@@ -144,12 +156,14 @@ export class AnalyzerService {
         this._backgroundAnalysisProgram =
             this._options.backgroundAnalysisProgramFactory !== undefined
                 ? this._options.backgroundAnalysisProgramFactory(
+                      this._options.serviceId,
                       this._options.console,
                       this._options.configOptions,
                       importResolver,
                       this._options.extension,
                       this._options.backgroundAnalysis,
-                      this._options.maxAnalysisTime
+                      this._options.maxAnalysisTime,
+                      this._options.cacheManager
                   )
                 : new BackgroundAnalysisProgram(
                       this._options.console,
@@ -157,12 +171,23 @@ export class AnalyzerService {
                       importResolver,
                       this._options.extension,
                       this._options.backgroundAnalysis,
-                      this._options.maxAnalysisTime
+                      this._options.maxAnalysisTime,
+                      /* disableChecker */ undefined,
+                      this._options.cacheManager
                   );
     }
 
-    clone(instanceName: string, backgroundAnalysis?: BackgroundAnalysisBase, fs?: FileSystem): AnalyzerService {
-        const service = new AnalyzerService(instanceName, fs ?? this.fs, { ...this._options, backgroundAnalysis });
+    clone(
+        instanceName: string,
+        serviceId: string,
+        backgroundAnalysis?: BackgroundAnalysisBase,
+        fs?: FileSystem
+    ): AnalyzerService {
+        const service = new AnalyzerService(instanceName, fs ?? this.fs, {
+            ...this._options,
+            serviceId,
+            backgroundAnalysis,
+        });
 
         // Make sure we keep editor content (open file) which could be different than one in the file system.
         for (const fileInfo of this.backgroundAnalysisProgram.program.getOpened()) {
@@ -171,7 +196,10 @@ export class AnalyzerService {
                 service.setFileOpened(
                     fileInfo.sourceFile.getFilePath(),
                     version,
-                    fileInfo.sourceFile.getOpenFileContents()!
+                    fileInfo.sourceFile.getOpenFileContents()!,
+                    fileInfo.sourceFile.getIPythonMode(),
+                    fileInfo.chainedSourceFile?.sourceFile.getFilePath(),
+                    fileInfo.sourceFile.getRealFilePath()
                 );
             }
         }
@@ -180,7 +208,12 @@ export class AnalyzerService {
     }
 
     dispose() {
-        this._backgroundAnalysisProgram.program.dispose();
+        if (!this._disposed) {
+            // Make sure we dispose program, otherwise, entire program
+            // will leak.
+            this._backgroundAnalysisProgram.dispose();
+        }
+
         this._disposed = true;
         this._removeSourceFileWatchers();
         this._removeConfigFileWatcher();
@@ -244,14 +277,19 @@ export class AnalyzerService {
         this._applyConfigOptions(host);
     }
 
+    contains(filePath: string): boolean {
+        return this.backgroundAnalysisProgram.contains(filePath);
+    }
+
     isTracked(filePath: string): boolean {
-        for (const includeSpec of this._configOptions.include) {
-            if (this._matchIncludeFileSpec(includeSpec.regExp, this._configOptions.exclude, filePath)) {
-                return true;
-            }
+        const fileInfo = this._program.getSourceFileInfo(filePath);
+        if (fileInfo) {
+            // If we already determined whether the file is tracked or not, don't do it again.
+            // This will make sure we have consistent look at the state once it is loaded to the memory.
+            return fileInfo.isTracked;
         }
 
-        return false;
+        return this._matchFileSpecs(filePath);
     }
 
     setFileOpened(
@@ -285,35 +323,24 @@ export class AnalyzerService {
         version: number | null,
         contents: TextDocumentContentChangeEvent[],
         ipythonMode = IPythonMode.None,
-        chainedFilePath?: string
+        realFilePath?: string
     ) {
         this._backgroundAnalysisProgram.updateOpenFileContents(path, version, contents, {
             isTracked: this.isTracked(path),
             ipythonMode,
-            chainedFilePath,
-            realFilePath: undefined,
+            chainedFilePath: undefined,
+            realFilePath,
         });
         this._scheduleReanalysis(/* requireTrackedFileUpdate */ false);
-    }
-
-    test_setIndexing(
-        workspaceIndices: Map<string, IndexResults>,
-        libraryIndices: Map<string | undefined, Map<string, IndexResults>>
-    ) {
-        this._backgroundAnalysisProgram.test_setIndexing(workspaceIndices, libraryIndices);
     }
 
     startIndexing(indexOptions: IndexOptions) {
         this._backgroundAnalysisProgram.startIndexing(indexOptions);
     }
 
-    setFileClosed(path: string) {
-        this._backgroundAnalysisProgram.setFileClosed(path);
+    setFileClosed(path: string, isTracked?: boolean) {
+        this._backgroundAnalysisProgram.setFileClosed(path, isTracked);
         this._scheduleReanalysis(/* requireTrackedFileUpdate */ false);
-    }
-
-    isFileOpen(path: string) {
-        return this._program.isFileOpen(path);
     }
 
     getParseResult(path: string) {
@@ -1099,6 +1126,7 @@ export class AnalyzerService {
         // Use a map to generate a list of unique files.
         const fileMap = new Map<string, string>();
 
+        // Scan all matching files from file system.
         timingStats.findFilesTime.timeOperation(() => {
             const matchedFiles = this._matchFiles(this._configOptions.include, this._configOptions.exclude);
 
@@ -1106,6 +1134,14 @@ export class AnalyzerService {
                 fileMap.set(file, file);
             }
         });
+
+        // And scan all matching open files. We need to do this since some of files are not backed by
+        // files in file system but only exist in memory (ex, virtual workspace)
+        this._backgroundAnalysisProgram.program
+            .getOpened()
+            .map((o) => o.sourceFile.getFilePath())
+            .filter((f) => this._matchFileSpecs(f))
+            .forEach((f) => fileMap.set(f, f));
 
         return [...fileMap.values()];
     }
@@ -1730,6 +1766,16 @@ export class AnalyzerService {
     private _matchIncludeFileSpec(includeRegExp: RegExp, exclude: FileSpec[], filePath: string) {
         if (includeRegExp.test(filePath)) {
             if (!this._isInExcludePath(filePath, exclude) && this._shouldIncludeFile(filePath)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private _matchFileSpecs(filePath: string) {
+        for (const includeSpec of this._configOptions.include) {
+            if (this._matchIncludeFileSpec(includeSpec.regExp, this._configOptions.exclude, filePath)) {
                 return true;
             }
         }
