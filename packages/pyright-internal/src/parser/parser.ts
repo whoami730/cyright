@@ -589,25 +589,9 @@ export class Parser {
                 break;
             }
 
-            const typeVarNode = this._parseTypeParameter();
+            const typeVarNode = this._parseTypeParameter(isCppClass);
             if (!typeVarNode) {
                 break;
-            }
-
-            // ! Cython
-            // Allow default template arguments
-            // TODO: Consume for now. Need to implement evaluation
-            if (isCppClass && this._consumeTokenIfOperator(OperatorType.Assign)) {
-                let defaultValue: ExpressionNode | ParameterNode;
-                const defaultToken = this._peekToken();
-                if (this._consumeTokenIfOperator(OperatorType.Multiply)) {
-                    defaultValue = ParameterNode.create(defaultToken, ParameterCategory.Simple);
-                } else {
-                    defaultValue = this._parseTestExpression(/* allowAssignmentExpression */ false);
-                }
-                typeVarNode.defaultValue = defaultValue;
-                defaultValue.parent = typeVarNode;
-                extendRange(typeVarNode, defaultValue);
             }
 
             typeVariableNodes.push(typeVarNode);
@@ -629,7 +613,8 @@ export class Parser {
     }
 
     // type_param: ['*' | '**'] NAME [':' bound_expr] ['=' default_expr]
-    private _parseTypeParameter(): TypeParameterNode | undefined {
+    // ! Cython
+    private _parseTypeParameter(isCppClass = false): TypeParameterNode | undefined {
         let typeParamCategory = TypeParameterCategory.TypeVar;
         if (this._consumeTokenIfOperator(OperatorType.Multiply)) {
             typeParamCategory = TypeParameterCategory.TypeVarTuple;
@@ -655,13 +640,27 @@ export class Parser {
         }
 
         let defaultExpression: ExpressionNode | undefined;
+        let defaultValue: ExpressionNode | ParameterNode | undefined; // used by Cython
+
         if (this._consumeTokenIfOperator(OperatorType.Assign)) {
-            defaultExpression = this._parseExpression(
-                /* allowUnpack */ typeParamCategory === TypeParameterCategory.TypeVarTuple
-            );
+            // ! Cython
+            // Allow default template arguments
+            // TODO: Consume for now. Need to implement evaluation
+            if (isCppClass) {
+                const defaultToken = this._peekToken();
+                if (this._consumeTokenIfOperator(OperatorType.Multiply)) {
+                    defaultValue = ParameterNode.create(defaultToken, ParameterCategory.Simple);
+                } else {
+                    defaultValue = this._parseTestExpression(/* allowAssignmentExpression */ false);
+                }
+            } else {
+                defaultExpression = this._parseExpression(
+                    /* allowUnpack */ typeParamCategory === TypeParameterCategory.TypeVarTuple
+                );
+            }
         }
 
-        return TypeParameterNode.create(name, typeParamCategory, boundExpression, defaultExpression);
+        return TypeParameterNode.create(name, typeParamCategory, boundExpression, defaultExpression, defaultValue);
     }
 
     // match_stmt: "match" subject_expr ':' NEWLINE INDENT case_block+ DEDENT

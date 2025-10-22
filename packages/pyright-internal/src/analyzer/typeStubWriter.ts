@@ -26,6 +26,7 @@ import {
     IfNode,
     ImportFromNode,
     ImportNode,
+    isExpressionNode,
     MemberAccessNode,
     ModuleNameNode,
     NameNode,
@@ -701,6 +702,16 @@ export class TypeStubWriter extends ParseTreeWalker {
         if (node.defaultExpression) {
             line += ' = ';
             line += this._printExpression(node.defaultExpression);
+        }
+
+        // ! Cython
+        if (node.defaultValue) {
+            line += ' = ';
+            if (isExpressionNode(node.defaultValue)) {
+                line += this._printExpression(node.defaultValue);
+            } else if (node.defaultValue.nodeType === ParseNodeType.Parameter) {
+                line += '...';
+            }
         }
 
         return line;

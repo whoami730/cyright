@@ -753,6 +753,11 @@ export class Binder extends ParseTreeWalker {
             if (param.defaultExpression) {
                 this.walk(param.defaultExpression);
             }
+
+            // ! Cython
+            if (param.defaultValue) {
+                this.walk(param.defaultValue);
+            }
         });
 
         node.parameters.forEach((param) => {

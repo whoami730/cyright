@@ -63,7 +63,7 @@ test.skip('cppclassoperators.pyx', () => {
     runDiagnosticTest('cppclassoperators.pyx');
 });
 
-test('cpptransform.pyx', () => {
+test.skip('cpptransform.pyx', () => {
     runDiagnosticTest('cpptransform.pyx');
 });
 

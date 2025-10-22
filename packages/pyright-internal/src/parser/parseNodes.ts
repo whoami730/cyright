@@ -990,6 +990,7 @@ export interface TypeParameterNode extends ParseNodeBase {
     boundExpression?: ExpressionNode;
     defaultExpression?: ExpressionNode;
     // ! Cython
+    // TODO: Combiner defaultValue and defaultExpression into single field
     defaultValue?: ExpressionNode | ParameterNode; // Template type parameters can have defaults
 }
 
@@ -998,7 +999,8 @@ export namespace TypeParameterNode {
         name: NameNode,
         typeParamCategory: TypeParameterCategory,
         boundExpression?: ExpressionNode,
-        defaultExpression?: ExpressionNode
+        defaultExpression?: ExpressionNode,
+        defaultValue? : ExpressionNode | ParameterNode,
     ) {
         const node: TypeParameterNode = {
             start: name.start,
@@ -1009,6 +1011,7 @@ export namespace TypeParameterNode {
             typeParamCategory,
             boundExpression,
             defaultExpression,
+            defaultValue,
         };
 
         name.parent = node;
@@ -1021,6 +1024,12 @@ export namespace TypeParameterNode {
         if (defaultExpression) {
             defaultExpression.parent = node;
             extendRange(node, defaultExpression);
+        }
+
+        // ! Cython
+        if (defaultValue) {
+            defaultValue.parent = node;
+            extendRange(node, defaultValue);
         }
 
         return node;

@@ -159,6 +159,16 @@ export function typeAnalyzeSampleFiles(
     // Always enable "test mode".
     configOptions.internalTestMode = true;
 
+    configOptions.verboseOutput = true;
+
+    // update config options to mirror running the extension
+    // these options are supplied usually by python extension
+    // or via vscode settings.
+
+    // configOptions.stubPath??
+    // configOptions.typeCheckingMode??
+    configOptions.useLibraryCodeForTypes = true;
+
     const fs = createFromRealFileSystem();
     const importResolver = new ImportResolver(fs, configOptions, new FullAccessHost(fs));
 

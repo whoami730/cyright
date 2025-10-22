@@ -19976,6 +19976,12 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                     );
                 }
 
+                // ! Cython
+                if (declaration.node.defaultValue && isExpressionNode(declaration.node.defaultValue)) {
+                    // TODO: IS this really required for Cython?
+                    getTypeOfExpression(declaration.node.defaultValue);
+                }
+
                 typeVar.details.isTypeParamSyntax = true;
 
                 // Associate the type variable with the owning scope.
