@@ -250,6 +250,7 @@ export interface EffectiveTypeResult {
     includesVariableDecl: boolean;
     includesIllegalTypeAliasDecl: boolean;
     isRecursiveDefinition: boolean;
+    evaluationAttempts?: number;
 }
 
 export interface ValidateArgTypeParams {
@@ -308,6 +309,9 @@ export interface CallResult {
     // Were any errors discovered when evaluating argument types?
     argumentErrors: boolean;
 
+    // Did one or more arguments evaluated to Any or Unknown?
+    isArgumentAnyOrUnknown?: boolean;
+
     // The parameter associated with the "active" argument (used
     // for signature help provider)
     activeParam?: FunctionParameter | undefined;
@@ -317,6 +321,12 @@ export interface CallResult {
     // is used for overloaded constructors where the arguments to the
     // constructor influence the specialized type of the constructed object.
     specializedInitSelfType?: Type | undefined;
+}
+
+export interface PrintTypeOptions {
+    expandTypeAlias?: boolean;
+    enforcePythonSyntax?: boolean;
+    useTypingUnpack?: boolean;
 }
 
 export interface TypeEvaluator {
@@ -371,8 +381,16 @@ export interface TypeEvaluator {
         resolveLocalNames: boolean,
         allowExternallyHiddenAccess?: boolean
     ) => DeclarationUtils.ResolvedAliasInfo | undefined;
-    getTypeOfIterable: (type: Type, isAsync: boolean, errorNode: ExpressionNode | undefined) => Type | undefined;
-    getTypeOfIterator: (type: Type, isAsync: boolean, errorNode: ExpressionNode | undefined) => Type | undefined;
+    getTypeOfIterable: (
+        typeResult: TypeResult,
+        isAsync: boolean,
+        errorNode: ExpressionNode | undefined
+    ) => TypeResult | undefined;
+    getTypeOfIterator: (
+        typeResult: TypeResult,
+        isAsync: boolean,
+        errorNode: ExpressionNode | undefined
+    ) => TypeResult | undefined;
     getGetterTypeFromProperty: (propertyClass: ClassType, inferTypeIfNeeded: boolean) => Type | undefined;
     getTypeOfArgument: (arg: FunctionArgument) => TypeResult;
     markNamesAccessed: (node: ParseNode, names: string[]) => void;
@@ -489,7 +507,7 @@ export interface TypeEvaluator {
         range: TextRange
     ) => Diagnostic | undefined;
 
-    printType: (type: Type, expandTypeAlias?: boolean) => string;
+    printType: (type: Type, options?: PrintTypeOptions) => string;
     printFunctionParts: (type: FunctionType) => [string[], string];
 
     getTypeCacheEntryCount: () => number;

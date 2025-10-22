@@ -762,7 +762,7 @@ test('FunctionMember2', () => {
 test('Annotations1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['annotations1.py']);
 
-    TestUtils.validateResults(analysisResults, 10);
+    TestUtils.validateResults(analysisResults, 11);
 });
 
 test('Annotations2', () => {
@@ -978,6 +978,12 @@ test('Properties12', () => {
 
 test('Properties13', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['properties13.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Properties14', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['properties14.py']);
 
     TestUtils.validateResults(analysisResults, 0);
 });

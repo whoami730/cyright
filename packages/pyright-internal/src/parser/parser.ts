@@ -589,25 +589,9 @@ export class Parser {
                 break;
             }
 
-            const typeVarNode = this._parseTypeParameter();
+            const typeVarNode = this._parseTypeParameter(isCppClass);
             if (!typeVarNode) {
                 break;
-            }
-
-            // ! Cython
-            // Allow default template arguments
-            // TODO: Consume for now. Need to implement evaluation
-            if (isCppClass && this._consumeTokenIfOperator(OperatorType.Assign)) {
-                let defaultValue: ExpressionNode | ParameterNode;
-                const defaultToken = this._peekToken();
-                if (this._consumeTokenIfOperator(OperatorType.Multiply)) {
-                    defaultValue = ParameterNode.create(defaultToken, ParameterCategory.Simple);
-                } else {
-                    defaultValue = this._parseTestExpression(/* allowAssignmentExpression */ false);
-                }
-                typeVarNode.defaultValue = defaultValue;
-                defaultValue.parent = typeVarNode;
-                extendRange(typeVarNode, defaultValue);
             }
 
             typeVariableNodes.push(typeVarNode);
@@ -629,7 +613,8 @@ export class Parser {
     }
 
     // type_param: ['*' | '**'] NAME [':' bound_expr] ['=' default_expr]
-    private _parseTypeParameter(): TypeParameterNode | undefined {
+    // ! Cython
+    private _parseTypeParameter(isCppClass = false): TypeParameterNode | undefined {
         let typeParamCategory = TypeParameterCategory.TypeVar;
         if (this._consumeTokenIfOperator(OperatorType.Multiply)) {
             typeParamCategory = TypeParameterCategory.TypeVarTuple;
@@ -655,13 +640,27 @@ export class Parser {
         }
 
         let defaultExpression: ExpressionNode | undefined;
+        let defaultValue: ExpressionNode | ParameterNode | undefined; // used by Cython
+
         if (this._consumeTokenIfOperator(OperatorType.Assign)) {
-            defaultExpression = this._parseExpression(
-                /* allowUnpack */ typeParamCategory === TypeParameterCategory.TypeVarTuple
-            );
+            // ! Cython
+            // Allow default template arguments
+            // TODO: Consume for now. Need to implement evaluation
+            if (isCppClass) {
+                const defaultToken = this._peekToken();
+                if (this._consumeTokenIfOperator(OperatorType.Multiply)) {
+                    defaultValue = ParameterNode.create(defaultToken, ParameterCategory.Simple);
+                } else {
+                    defaultValue = this._parseTestExpression(/* allowAssignmentExpression */ false);
+                }
+            } else {
+                defaultExpression = this._parseExpression(
+                    /* allowUnpack */ typeParamCategory === TypeParameterCategory.TypeVarTuple
+                );
+            }
         }
 
-        return TypeParameterNode.create(name, typeParamCategory, boundExpression, defaultExpression);
+        return TypeParameterNode.create(name, typeParamCategory, boundExpression, defaultExpression, defaultValue);
     }
 
     // match_stmt: "match" subject_expr ':' NEWLINE INDENT case_block+ DEDENT
@@ -1526,11 +1525,12 @@ export class Parser {
             const possibleIndent = this._peekToken();
             if (!this._consumeTokenIfType(TokenType.Indent)) {
                 this._addError(Localizer.Diagnostic.expectedIndentedBlock(), this._peekToken());
-            } else {
-                const indentToken = possibleIndent as IndentToken;
-                if (indentToken.isIndentAmbiguous) {
-                    this._addError(Localizer.Diagnostic.inconsistentTabs(), indentToken);
-                }
+                return suite;
+            }
+
+            const bodyIndentToken = possibleIndent as IndentToken;
+            if (bodyIndentToken.isIndentAmbiguous) {
+                this._addError(Localizer.Diagnostic.inconsistentTabs(), bodyIndentToken);
             }
 
             while (true) {
@@ -1563,7 +1563,21 @@ export class Parser {
                     } else {
                         extendRange(suite, dedentToken);
                     }
-                    break;
+
+                    // Did this dedent take us to an indent amount that is less than the
+                    // initial indent of the suite body?
+                    if (!bodyIndentToken || dedentToken.indentAmount < bodyIndentToken.indentAmount) {
+                        break;
+                    } else if (dedentToken.indentAmount === bodyIndentToken.indentAmount) {
+                        // If the next token is also a dedent that reduces the indent
+                        // level to a less than the initial indent of the suite body, swallow
+                        // the extra dedent to help recover the parse.
+                        const nextToken = this._peekToken();
+                        if (this._consumeTokenIfType(TokenType.Dedent)) {
+                            extendRange(suite, nextToken);
+                            break;
+                        }
+                    }
                 }
 
                 // ! Cython
@@ -3256,16 +3270,17 @@ export class Parser {
         }
 
         if (!this._consumeTokenIfKeyword(KeywordType.Else)) {
-            return this._handleExpressionParseError(
-                ErrorExpressionCategory.MissingElse,
-                Localizer.Diagnostic.expectedElse()
+            return TernaryNode.create(
+                ifExpr,
+                testExpr,
+                this._handleExpressionParseError(
+                    ErrorExpressionCategory.MissingElse,
+                    Localizer.Diagnostic.expectedElse()
+                )
             );
         }
 
         const elseExpr = this._parseTestExpression(/* allowAssignmentExpression */ true);
-        if (elseExpr.nodeType === ParseNodeType.Error) {
-            return elseExpr;
-        }
 
         return TernaryNode.create(ifExpr, testExpr, elseExpr);
     }

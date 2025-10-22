@@ -256,6 +256,24 @@ export function getCodeFlowEngine(
                     flowIncompleteGeneration++;
                 }
 
+                let combinedType: Type | undefined;
+                if (cachedEntry.incompleteSubtypes.length > 0) {
+                    // Recompute the effective type based on all of the incomplete
+                    // types we've accumulated so far.
+                    const typesToCombine: Type[] = [];
+
+                    cachedEntry.incompleteSubtypes.forEach((t) => {
+                        if (t.type) {
+                            typesToCombine.push(t.type);
+                        }
+                    });
+
+                    combinedType = typesToCombine.length > 0 ? combineTypes(typesToCombine) : undefined;
+                }
+
+                cachedEntry.type = combinedType;
+                cachedEntry.generationCount = flowIncompleteGeneration;
+
                 return getCacheEntry(flowNode);
             }
 
@@ -276,24 +294,8 @@ export function getCodeFlowEngine(
                     return { type: cachedEntry, isIncomplete: false };
                 }
 
-                let type = cachedEntry.type;
-
-                if (cachedEntry.incompleteSubtypes.length > 0) {
-                    // Recompute the effective type based on all of the incomplete
-                    // types we've accumulated so far.
-                    const typesToCombine: Type[] = [];
-
-                    cachedEntry.incompleteSubtypes.forEach((t) => {
-                        if (t.type) {
-                            typesToCombine.push(t.type);
-                        }
-                    });
-
-                    type = typesToCombine.length > 0 ? combineTypes(typesToCombine) : undefined;
-                }
-
                 return {
-                    type,
+                    type: cachedEntry.type,
                     isIncomplete: true,
                     incompleteSubtypes: cachedEntry.incompleteSubtypes,
                     generationCount: cachedEntry.generationCount,
@@ -325,9 +327,14 @@ export function getCodeFlowEngine(
                 flowNodeTypeCache.pendingNodes.add(flowNode.id);
 
                 try {
-                    return callback();
-                } finally {
+                    const result = callback();
                     flowNodeTypeCache.pendingNodes.delete(flowNode.id);
+                    return result;
+                } catch (e) {
+                    // Don't use a "finally" clause here because the TypeScript
+                    // debugger doesn't handle "step out" well with finally clauses.
+                    flowNodeTypeCache.pendingNodes.delete(flowNode.id);
+                    throw e;
                 }
             }
 

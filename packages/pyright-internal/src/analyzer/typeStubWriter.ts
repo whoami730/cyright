@@ -26,6 +26,7 @@ import {
     IfNode,
     ImportFromNode,
     ImportNode,
+    isExpressionNode,
     MemberAccessNode,
     ModuleNameNode,
     NameNode,
@@ -334,7 +335,7 @@ export class TypeStubWriter extends ParseTreeWalker {
                     let returnType = this._evaluator.getFunctionInferredReturnType(functionType.functionType);
                     returnType = removeUnknownFromUnion(returnType);
                     if (!isNever(returnType) && !isUnknown(returnType)) {
-                        line += ` # -> ${this._evaluator.printType(returnType, /* expandTypeAlias */ false)}:`;
+                        line += ` # -> ${this._evaluator.printType(returnType)}:`;
                     }
                 }
             }
@@ -703,6 +704,16 @@ export class TypeStubWriter extends ParseTreeWalker {
             line += this._printExpression(node.defaultExpression);
         }
 
+        // ! Cython
+        if (node.defaultValue) {
+            line += ' = ';
+            if (isExpressionNode(node.defaultValue)) {
+                line += this._printExpression(node.defaultValue);
+            } else if (node.defaultValue.nodeType === ParseNodeType.Parameter) {
+                line += '...';
+            }
+        }
+
         return line;
     }
 
@@ -954,7 +965,7 @@ export class TypeStubWriter extends ParseTreeWalker {
                 if (TypeBase.isInstantiable(type)) {
                     type = TypeBase.cloneTypeAsInstance(type);
                 }
-                transformed = this._evaluator.printType(type, /*expandTypeAlias*/ true);
+                transformed = this._evaluator.printType(type, { expandTypeAlias: true });
             }
         }
         return transformed;

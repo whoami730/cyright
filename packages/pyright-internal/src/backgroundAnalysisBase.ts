@@ -491,8 +491,7 @@ export abstract class BackgroundAnalysisRunnerBase extends BackgroundThreadBase 
             }
 
             case 'shutdown': {
-                this._program.dispose();
-                parentPort?.close();
+                this.shutdown();
                 break;
             }
 
@@ -573,6 +572,11 @@ export abstract class BackgroundAnalysisRunnerBase extends BackgroundThreadBase 
 
     protected reportIndex(port: MessagePort, result: { path: string; indexResults: IndexResults }) {
         port.postMessage({ requestType: 'indexResult', data: result });
+    }
+
+    protected override shutdown() {
+        this._program.dispose();
+        super.shutdown();
     }
 
     private _reportDiagnostics(diagnostics: FileDiagnostics[], filesLeftToAnalyze: number, elapsedTime: number) {
@@ -674,6 +678,6 @@ export interface AnalysisResponse {
 }
 
 export interface IndexOptions {
-    // forceIndexing means it will include symbols not shown in __all__ for py file.
-    packageDepths: [moduleName: string, maxDepth: number, forceIndexing: boolean][];
+    // includeAllSymbols means it will include symbols not shown in __all__ for py file.
+    packageDepths: [moduleName: string, maxDepth: number, includeAllSymbols: boolean][];
 }

@@ -900,7 +900,8 @@ export class Tokenizer {
             isDecimalInteger =
                 this._cs.currentChar !== Char.Period &&
                 this._cs.currentChar !== Char.e &&
-                this._cs.currentChar !== Char.E;
+                this._cs.currentChar !== Char.E &&
+                (this._cs.currentChar < Char._1 || this._cs.currentChar > Char._9);
         }
 
         if (isDecimalInteger) {
@@ -1178,12 +1179,16 @@ export class Tokenizer {
         const value = this._cs.getText().substring(start, start + length);
         const comment = Comment.create(start, length, value);
 
-        const typeIgnoreRegexMatch = value.match(/^\s*type:\s*ignore(\s*\[([\s*\w-,]*)\]|\s|$)/);
+        const typeIgnoreRegexMatch = value.match(/((^|#)\s*)type:\s*ignore(\s*\[([\s*\w-,]*)\]|\s|$)/);
         if (typeIgnoreRegexMatch) {
-            const textRange: TextRange = { start, length: typeIgnoreRegexMatch[0].length };
+            const commentStart = start + (typeIgnoreRegexMatch.index ?? 0);
+            const textRange: TextRange = {
+                start: commentStart + typeIgnoreRegexMatch[1].length,
+                length: typeIgnoreRegexMatch[0].length - typeIgnoreRegexMatch[1].length,
+            };
             const ignoreComment: IgnoreComment = {
                 range: textRange,
-                rulesList: this._getIgnoreCommentRulesList(start, typeIgnoreRegexMatch),
+                rulesList: this._getIgnoreCommentRulesList(commentStart, typeIgnoreRegexMatch),
             };
 
             if (this._tokens.findIndex((t) => t.type !== TokenType.NewLine && t && t.type !== TokenType.Indent) < 0) {
@@ -1193,12 +1198,16 @@ export class Tokenizer {
             }
         }
 
-        const pyrightIgnoreRegexMatch = value.match(/^\s*pyright:\s*ignore(\s*\[([\s*\w-,]*)\]|\s|$)/);
+        const pyrightIgnoreRegexMatch = value.match(/((^|#)\s*)pyright:\s*ignore(\s*\[([\s*\w-,]*)\]|\s|$)/);
         if (pyrightIgnoreRegexMatch) {
-            const textRange: TextRange = { start, length: pyrightIgnoreRegexMatch[0].length };
+            const commentStart = start + (pyrightIgnoreRegexMatch.index ?? 0);
+            const textRange: TextRange = {
+                start: commentStart + pyrightIgnoreRegexMatch[1].length,
+                length: pyrightIgnoreRegexMatch[0].length - pyrightIgnoreRegexMatch[1].length,
+            };
             const ignoreComment: IgnoreComment = {
                 range: textRange,
-                rulesList: this._getIgnoreCommentRulesList(start, pyrightIgnoreRegexMatch),
+                rulesList: this._getIgnoreCommentRulesList(commentStart, pyrightIgnoreRegexMatch),
             };
             this._pyrightIgnoreLines.set(this._lineRanges.length, ignoreComment);
         }
@@ -1208,11 +1217,11 @@ export class Tokenizer {
 
     // Extracts the individual rules within a "type: ignore [x, y, z]" comment.
     private _getIgnoreCommentRulesList(start: number, match: RegExpMatchArray): IgnoreCommentRule[] | undefined {
-        if (match.length < 3 || match[2] === undefined) {
+        if (match.length < 5 || match[4] === undefined) {
             return undefined;
         }
 
-        const splitElements = match[2].split(',');
+        const splitElements = match[4].split(',');
         const commentRules: IgnoreCommentRule[] = [];
         let currentOffset = start + match[0].indexOf('[') + 1;
 

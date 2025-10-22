@@ -179,6 +179,12 @@ test('With5', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('With6', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['with6.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('Mro1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['mro1.py']);
 
@@ -382,7 +388,7 @@ test('Python2', () => {
 test('InconsistentSpaceTab1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['inconsistentSpaceTab1.py']);
 
-    TestUtils.validateResults(analysisResults, 4);
+    TestUtils.validateResults(analysisResults, 1);
 });
 
 test('InconsistentSpaceTab2', () => {
@@ -461,6 +467,12 @@ test('UninitializedVariable1', () => {
     configOptions.diagnosticRuleSet.reportUninitializedInstanceVariable = 'error';
     analysisResults = TestUtils.typeAnalyzeSampleFiles(['uninitializedVariable1.py'], configOptions);
     TestUtils.validateResults(analysisResults, 1);
+});
+
+test('RegionComments1', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['regionComments1.py']);
+
+    TestUtils.validateResults(analysisResults, 2);
 });
 
 // For now, this functionality is disabled.

@@ -61,6 +61,7 @@ import {
     UnknownType,
 } from '../analyzer/types';
 import {
+    ClassMemberLookupFlags,
     doForEachSubtype,
     getDeclaringModulesForType,
     getMembersForClass,
@@ -68,6 +69,7 @@ import {
     isLiteralType,
     isLiteralTypeOrUnion,
     isProperty,
+    lookUpClassMember,
     lookUpObjectMember,
 } from '../analyzer/typeUtils';
 import { throwIfCancellationRequested } from '../common/cancellationUtils';
@@ -104,6 +106,7 @@ import {
     ParseNodeType,
     SetNode,
     StringNode,
+    TypeAnnotationNode,
 } from '../parser/parseNodes';
 import { ParseResults } from '../parser/parser';
 import { StringToken, StringTokenFlags, Token, TokenType } from '../parser/tokenizerTypes';
@@ -304,8 +307,10 @@ export interface CompletionOptions {
     snippet: boolean;
     lazyEdit: boolean;
     autoImport: boolean;
+    includeUserSymbolsInAutoImport: boolean;
     extraCommitChars: boolean;
     importFormat: ImportFormat;
+    triggerCharacter?: string;
 }
 
 export type AbbreviationMap = Map<string, AbbreviationInfo>;
@@ -539,6 +544,11 @@ export class CompletionProvider {
                 if (result || result === undefined) {
                     return result;
                 }
+            }
+
+            if (curNode.nodeType === ParseNodeType.List && this._options.triggerCharacter === '[') {
+                // If this is an empty list, don't start putting completions up yet.
+                return undefined;
             }
 
             if (curNode.nodeType === ParseNodeType.ImportFrom) {
@@ -789,7 +799,7 @@ export class CompletionProvider {
             curNode.parent.parent?.nodeType === ParseNodeType.Suite &&
             curNode.parent.parent.parent?.nodeType === ParseNodeType.Class
         ) {
-            const completionList = this._getClassVariableCompletions(priorWord, curNode);
+            const completionList = this._getClassVariableCompletions(curNode);
             if (completionList) {
                 return completionList;
             }
@@ -973,7 +983,108 @@ export class CompletionProvider {
         return { completionMap };
     }
 
-    private _getClassVariableCompletions(priorWord: string, partialName: NameNode): CompletionResults | undefined {
+    private _addClassVariableTypeAnnotationCompletions(
+        priorWord: string,
+        parseNode: ParseNode,
+        completionMap: CompletionMap
+    ): void {
+        // class T:
+        //    f: |<= here
+        const isTypeAnnotationOfClassVariable =
+            parseNode.parent?.nodeType === ParseNodeType.TypeAnnotation &&
+            parseNode.parent.valueExpression.nodeType === ParseNodeType.Name &&
+            parseNode.parent.typeAnnotation === parseNode &&
+            parseNode.parent.parent?.nodeType === ParseNodeType.StatementList &&
+            parseNode.parent.parent.parent?.nodeType === ParseNodeType.Suite &&
+            parseNode.parent.parent.parent.parent?.nodeType === ParseNodeType.Class;
+
+        if (!isTypeAnnotationOfClassVariable) {
+            return;
+        }
+
+        const enclosingClass = ParseTreeUtils.getEnclosingClass(parseNode, false);
+        if (!enclosingClass) {
+            return;
+        }
+
+        const classResults = this._evaluator.getTypeOfClass(enclosingClass);
+        if (!classResults) {
+            return undefined;
+        }
+
+        const classVariableName = ((parseNode.parent as TypeAnnotationNode).valueExpression as NameNode).value;
+        const classMember = lookUpClassMember(
+            classResults.classType,
+            classVariableName,
+            ClassMemberLookupFlags.SkipInstanceVariables | ClassMemberLookupFlags.SkipOriginalClass
+        );
+
+        // First, see whether we can use semantic info to get variable type.
+        if (classMember) {
+            const memberType = this._evaluator.getTypeOfMember(classMember);
+
+            const text = this._evaluator.printType(memberType, {
+                enforcePythonSyntax: true,
+                expandTypeAlias: false,
+            });
+
+            this._addNameToCompletions(text, CompletionItemKind.Reference, priorWord, completionMap, {
+                sortText: this._makeSortText(SortCategory.LikelyKeyword, text),
+            });
+            return;
+        }
+
+        // If we can't do that using semantic info, then try syntactic info.
+        const symbolTable = new Map<string, Symbol>();
+        for (const mroClass of classResults.classType.details.mro) {
+            if (mroClass === classResults.classType) {
+                // Ignore current type.
+                continue;
+            }
+
+            if (isInstantiableClass(mroClass)) {
+                getMembersForClass(mroClass, symbolTable, /* includeInstanceVars */ false);
+            }
+        }
+
+        const symbol = symbolTable.get(classVariableName);
+        if (!symbol) {
+            return;
+        }
+
+        const decls = symbol
+            .getDeclarations()
+            .filter((d) => isVariableDeclaration(d) && d.moduleName !== 'builtins') as VariableDeclaration[];
+
+        // Skip any symbols invalid such as defined in the same class.
+        if (
+            decls.length === 0 ||
+            decls.some((d) => d.node && ParseTreeUtils.getEnclosingClass(d.node, false) === enclosingClass)
+        ) {
+            return;
+        }
+
+        const declWithTypeAnnotations = decls.filter((d) => d.typeAnnotationNode);
+        if (declWithTypeAnnotations.length === 0) {
+            return;
+        }
+
+        const printFlags = isStubFile(this._filePath)
+            ? ParseTreeUtils.PrintExpressionFlags.ForwardDeclarations |
+              ParseTreeUtils.PrintExpressionFlags.DoNotLimitStringLength
+            : ParseTreeUtils.PrintExpressionFlags.DoNotLimitStringLength;
+
+        const text = `${ParseTreeUtils.printExpression(
+            declWithTypeAnnotations[declWithTypeAnnotations.length - 1].typeAnnotationNode!,
+            printFlags
+        )}`;
+
+        this._addNameToCompletions(text, CompletionItemKind.Reference, priorWord, completionMap, {
+            sortText: this._makeSortText(SortCategory.LikelyKeyword, text),
+        });
+    }
+
+    private _getClassVariableCompletions(partialName: NameNode): CompletionResults | undefined {
         const enclosingClass = ParseTreeUtils.getEnclosingClass(partialName, false);
         if (!enclosingClass) {
             return undefined;
@@ -990,11 +1101,6 @@ export class CompletionProvider {
                 getMembersForClass(mroClass, symbolTable, /* includeInstanceVars */ false);
             }
         }
-
-        const printFlags = isStubFile(this._filePath)
-            ? ParseTreeUtils.PrintExpressionFlags.ForwardDeclarations |
-              ParseTreeUtils.PrintExpressionFlags.DoNotLimitStringLength
-            : ParseTreeUtils.PrintExpressionFlags.DoNotLimitStringLength;
 
         const completionMap = new CompletionMap();
         symbolTable.forEach((symbol, name) => {
@@ -1019,19 +1125,7 @@ export class CompletionProvider {
                 return;
             }
 
-            let edits: Edits | undefined;
-            const declWithTypeAnnotations = decls.filter((d) => d.typeAnnotationNode);
-            if (declWithTypeAnnotations.length > 0) {
-                const text = `${name}: ${ParseTreeUtils.printExpression(
-                    declWithTypeAnnotations[declWithTypeAnnotations.length - 1].typeAnnotationNode!,
-                    printFlags
-                )}`;
-                edits = {
-                    textEdit: this._createReplaceEdits(priorWord, partialName, text),
-                };
-            }
-
-            this._addSymbol(name, symbol, partialName.value, completionMap, { edits });
+            this._addSymbol(name, symbol, partialName.value, completionMap, {});
         });
 
         return completionMap.size > 0 ? { completionMap } : undefined;
@@ -1391,6 +1485,12 @@ export class CompletionProvider {
         if (leftType) {
             leftType = this._evaluator.makeTopLevelTypeVarsConcrete(leftType);
 
+            // If this is an unknown type with a "possible type" associated with
+            // it, use the possible type.
+            if (isUnknown(leftType) && leftType.possibleType) {
+                leftType = this._evaluator.makeTopLevelTypeVarsConcrete(leftType.possibleType);
+            }
+
             doForEachSubtype(leftType, (subtype) => {
                 subtype = this._evaluator.makeTopLevelTypeVarsConcrete(subtype);
 
@@ -1521,6 +1621,11 @@ export class CompletionProvider {
         if (priorText.slice(-2) === '..') {
             return completionResults;
         }
+
+        // Defining type annotation for class variables.
+        // ex) class A:
+        //         variable: | <= here
+        this._addClassVariableTypeAnnotationCompletions(priorWord, parseNode, completionMap);
 
         // Add call argument completions.
         this._addCallArgumentCompletions(
@@ -1785,11 +1890,6 @@ export class CompletionProvider {
     }
 
     private _getIndexerKeys(indexNode: IndexNode, invocationNode: ParseNode) {
-        if (indexNode.baseExpression.nodeType !== ParseNodeType.Name) {
-            // This completion only supports simple name case
-            return [];
-        }
-
         const baseType = this._evaluator.getType(indexNode.baseExpression);
         if (!baseType || !isClassInstance(baseType)) {
             return [];
@@ -1817,6 +1917,11 @@ export class CompletionProvider {
             if (keys.length > 0) {
                 return keys;
             }
+        }
+
+        if (indexNode.baseExpression.nodeType !== ParseNodeType.Name) {
+            // This completion only supports simple name case
+            return [];
         }
 
         // Must be local variable/parameter
@@ -2587,7 +2692,7 @@ export class CompletionProvider {
                                             }
                                         }
                                     }
-                                    typeDetail = name + ': ' + this._evaluator.printType(type, expandTypeAlias);
+                                    typeDetail = name + ': ' + this._evaluator.printType(type, { expandTypeAlias });
                                     break;
                                 }
 
@@ -2611,10 +2716,7 @@ export class CompletionProvider {
                                                     /* inferTypeIfNeeded */ true
                                                 ) || UnknownType.create();
                                             typeDetail =
-                                                name +
-                                                ': ' +
-                                                this._evaluator.printType(propertyType, /* expandTypeAlias */ false) +
-                                                ' (property)';
+                                                name + ': ' + this._evaluator.printType(propertyType) + ' (property)';
                                         } else if (isOverloadedFunction(functionType)) {
                                             // 35 is completion tooltip's default width size
                                             typeDetail = getOverloadedFunctionTooltip(
@@ -2622,11 +2724,10 @@ export class CompletionProvider {
                                                 this._evaluator,
                                                 /* columnThreshold */ 35
                                             );
+                                        } else if (isFunction(functionType)) {
+                                            typeDetail = name + this._evaluator.printType(functionType);
                                         } else {
-                                            typeDetail =
-                                                name +
-                                                ': ' +
-                                                this._evaluator.printType(functionType, /* expandTypeAlias */ false);
+                                            typeDetail = name + ': ' + this._evaluator.printType(functionType);
                                         }
                                     }
                                     break;

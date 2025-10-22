@@ -15,9 +15,11 @@ import { Declaration, DeclarationType } from '../analyzer/declaration';
 import { convertDocStringToMarkdown, convertDocStringToPlainText } from '../analyzer/docStringConversion';
 import * as ParseTreeUtils from '../analyzer/parseTreeUtils';
 import { SourceMapper } from '../analyzer/sourceMapper';
+import { getModuleNodeDocString } from '../analyzer/typeDocStringUtils';
 import { TypeEvaluator } from '../analyzer/typeEvaluatorTypes';
 import {
     ClassType,
+    FunctionType,
     getTypeAliasInfo,
     isClass,
     isClassInstance,
@@ -26,6 +28,7 @@ import {
     isModule,
     isOverloadedFunction,
     isTypeVar,
+    OverloadedFunctionType,
     Type,
     UnknownType,
 } from '../analyzer/types';
@@ -122,7 +125,7 @@ export class HoverProvider {
                         // the top-level module, which does have a declaration.
                         typeText = '(module) ' + node.value;
                     } else {
-                        typeText = node.value + ': ' + evaluator.printType(type, /* expandTypeAlias */ false);
+                        typeText = node.value + ': ' + evaluator.printType(type);
                     }
 
                     this._addResultsPart(results.parts, typeText, /* python */ true);
@@ -254,7 +257,16 @@ export class HoverProvider {
 
             case DeclarationType.Class:
             case DeclarationType.SpecialBuiltInClass: {
-                if (this._addInitMethodInsteadIfCallNode(format, node, evaluator, parts, sourceMapper, resolvedDecl)) {
+                if (
+                    this._addInitOrNewMethodInsteadIfCallNode(
+                        format,
+                        node,
+                        evaluator,
+                        parts,
+                        sourceMapper,
+                        resolvedDecl
+                    )
+                ) {
                     return;
                 }
 
@@ -297,16 +309,16 @@ export class HoverProvider {
 
             case DeclarationType.Function: {
                 let label = 'function';
+                let isProperty = false;
 
                 if (resolvedDecl.isMethod) {
                     const declaredType = evaluator.getTypeForDeclaration(resolvedDecl);
-                    label =
-                        declaredType && isMaybeDescriptorInstance(declaredType, /* requireSetter */ false)
-                            ? 'property'
-                            : 'method';
+                    isProperty = !!declaredType && isMaybeDescriptorInstance(declaredType, /* requireSetter */ false);
+                    label = isProperty ? 'property' : 'method';
                 }
 
                 const type = evaluator.getType(node);
+                const sep = isProperty ? ': ' : '';
 
                 // ! Cython
                 // ! Cython CPP
@@ -320,27 +332,33 @@ export class HoverProvider {
                     }
                 }
 
-                if (type && isOverloadedFunction(type)) {
-                    this._addResultsPart(
-                        parts,
-                        `(${label})\n${getOverloadedFunctionTooltip(type, evaluator)}`,
-                        /* python */ true
-                    );
-                } else {
-                    this._addResultsPart(
-                        parts,
-                        `(${label}) ` + node.value + this._getTypeText(node, evaluator),
-                        /* python */ true
-                    );
+                if (type) {
+                    if (isOverloadedFunction(type)) {
+                        this._addResultsPart(
+                            parts,
+                            `(${label})\n${getOverloadedFunctionTooltip(type, evaluator)}`,
+                            /* python */ true
+                        );
+                    } else if (isFunction(type)) {
+                        this._addResultsPart(
+                            parts,
+                            `(${label}) ${node.value}${sep}${evaluator.printType(type)}`,
+                            /* python */ true
+                        );
+                    } else {
+                        this._addResultsPart(
+                            parts,
+                            `(${label}) ${node.value}: ${evaluator.printType(type)}`,
+                            /* python */ true
+                        );
+                    }
                 }
-
                 this._addDocumentationPart(format, sourceMapper, parts, node, evaluator, resolvedDecl);
                 break;
             }
 
             case DeclarationType.Alias: {
-                this._addResultsPart(parts, '(module) ' + node.value, /* python */ true);
-                this._addDocumentationPart(format, sourceMapper, parts, node, evaluator, resolvedDecl);
+                this._addModuleParts(format, sourceMapper, parts, node.value, [resolvedDecl.path]);
                 break;
             }
 
@@ -385,11 +403,7 @@ export class HoverProvider {
                     }
 
                     // e.g. (key) name: str
-                    const text =
-                        '(key) ' +
-                        node.value +
-                        ': ' +
-                        evaluator.printType(entry.valueType, /* expandTypeAlias */ false);
+                    const text = '(key) ' + node.value + ': ' + evaluator.printType(entry.valueType);
                     this._addResultsPart(parts, text, /* python */ true);
 
                     const declarations = subtype.details.fields.get(node.value)?.getDeclarations();
@@ -414,7 +428,7 @@ export class HoverProvider {
         });
     }
 
-    private static _addInitMethodInsteadIfCallNode(
+    private static _addInitOrNewMethodInsteadIfCallNode(
         format: MarkupKind,
         node: NameNode,
         evaluator: TypeEvaluator,
@@ -429,11 +443,10 @@ export class HoverProvider {
 
         // Allow the left to be a member access chain (e.g. a.b.c) if the
         // node in question is the last item in the chain.
-        if (
-            callLeftNode.parent &&
-            callLeftNode.parent.nodeType === ParseNodeType.MemberAccess &&
-            node === callLeftNode.parent.memberName
-        ) {
+        if (callLeftNode?.parent?.nodeType === ParseNodeType.MemberAccess && node === callLeftNode.parent.memberName) {
+            callLeftNode = node.parent;
+            // Allow the left to be a generic class constructor (e.g. foo[int]())
+        } else if (callLeftNode?.parent?.nodeType === ParseNodeType.Index) {
             callLeftNode = node.parent;
         }
 
@@ -452,46 +465,90 @@ export class HoverProvider {
             return false;
         }
 
-        const initMethodMember = lookUpClassMember(classType, '__init__', ClassMemberLookupFlags.SkipInstanceVariables);
-
-        if (!initMethodMember) {
-            return false;
-        }
-
         const instanceType = evaluator.getType(callLeftNode.parent);
-        const functionType = evaluator.getTypeOfMember(initMethodMember);
-
-        if (!instanceType || !functionType || !isClassInstance(instanceType) || !isFunction(functionType)) {
+        if (!instanceType || !isClassInstance(instanceType)) {
             return false;
         }
 
-        const initMethodType = evaluator.bindFunctionToClassOrObject(instanceType, functionType);
+        let methodType: FunctionType | OverloadedFunctionType | undefined;
 
-        if (!initMethodType || !isFunction(initMethodType)) {
-            return false;
+        // Try to get the `__init__` method first because it typically has more type information than `__new__`.
+        // Don't exclude `object.__init__` since in the plain case we want to show Foo().
+        const initMember = lookUpClassMember(classType, '__init__', ClassMemberLookupFlags.SkipInstanceVariables);
+
+        if (initMember) {
+            const functionType = evaluator.getTypeOfMember(initMember);
+
+            if (isFunction(functionType) || isOverloadedFunction(functionType)) {
+                methodType = evaluator.bindFunctionToClassOrObject(instanceType, functionType);
+            }
         }
 
-        const functionParts = evaluator.printFunctionParts(initMethodType);
-        const classText = `${node.value}(${functionParts[0].join(', ')})`;
+        // If there was no `__init__`, excluding `object` class `__init__`, or if `__init__` only had default params (*args: Any, **kwargs: Any) or no params (),
+        // see if we can find a better `__new__` method.
+        if (
+            !methodType ||
+            (methodType &&
+                isFunction(methodType) &&
+                (FunctionType.hasDefaultParameters(methodType) || methodType.details.parameters.length === 0))
+        ) {
+            const newMember = lookUpClassMember(
+                classType,
+                '__new__',
+                ClassMemberLookupFlags.SkipObjectBaseClass | ClassMemberLookupFlags.SkipInstanceVariables
+            );
 
-        this._addResultsPart(parts, '(class) ' + classText, /* python */ true);
-        const addedDoc = this._addDocumentationPartForType(
-            format,
-            sourceMapper,
-            parts,
-            initMethodType,
-            declaration,
-            evaluator
-        );
-        if (!addedDoc) {
-            this._addDocumentationPartForType(format, sourceMapper, parts, classType, declaration, evaluator);
+            if (newMember) {
+                const newMemberType = evaluator.getTypeOfMember(newMember);
+
+                // Prefer `__new__` if it doesn't have default params (*args: Any, **kwargs: Any) or no params ().
+                if (isFunction(newMemberType) || isOverloadedFunction(newMemberType)) {
+                    // Set `treatConstructorAsClassMember` to true to exclude `cls` as a parameter.
+                    methodType = evaluator.bindFunctionToClassOrObject(
+                        instanceType,
+                        newMemberType,
+                        /* memberClass */ undefined,
+                        /* errorNode */ undefined,
+                        /* recursiveCount */ undefined,
+                        /* treatConstructorAsClassMember */ true
+                    );
+                }
+            }
         }
-        return true;
+
+        if (methodType && (isFunction(methodType) || isOverloadedFunction(methodType))) {
+            let classText = '';
+            if (isOverloadedFunction(methodType)) {
+                const overloads = methodType.overloads.map((overload) => evaluator.printFunctionParts(overload));
+                overloads.forEach((overload, index) => {
+                    classText = classText + `${node.value}(${overload[0].join(', ')})\n\n`;
+                });
+            } else if (isFunction(methodType)) {
+                const functionParts = evaluator.printFunctionParts(methodType);
+                classText = `${node.value}(${functionParts[0].join(', ')})`;
+            }
+
+            this._addResultsPart(parts, '(class) ' + classText, /* python */ true);
+            const addedDoc = this._addDocumentationPartForType(
+                format,
+                sourceMapper,
+                parts,
+                methodType,
+                declaration,
+                evaluator
+            );
+
+            if (!addedDoc) {
+                this._addDocumentationPartForType(format, sourceMapper, parts, classType, declaration, evaluator);
+            }
+            return true;
+        }
+        return false;
     }
 
     private static _getTypeText(node: NameNode, evaluator: TypeEvaluator, expandTypeAlias = false): string {
         const type = evaluator.getType(node) || UnknownType.create();
-        return ': ' + evaluator.printType(type, expandTypeAlias);
+        return ': ' + evaluator.printType(type, { expandTypeAlias });
     }
 
     private static _addDocumentationPart(
@@ -506,6 +563,26 @@ export class HoverProvider {
         if (type) {
             this._addDocumentationPartForType(format, sourceMapper, parts, type, resolvedDecl, evaluator);
         }
+    }
+
+    private static _addModuleParts(
+        format: MarkupKind,
+        sourceMapper: SourceMapper,
+        parts: HoverTextPart[],
+        name: string,
+        resolvedPaths: string[]
+    ) {
+        // First the 'module' header.
+        this._addResultsPart(parts, '(module) ' + name, /* python */ true);
+
+        // Parse the modules files and try to find the doc string.
+        const modules = resolvedPaths.map((p) => sourceMapper.findModules(p)).flat();
+        const docString = getModuleNodeDocString(modules);
+        if (docString) {
+            this._addDocumentationResultsPart(format, parts, docString);
+            return true;
+        }
+        return false;
     }
 
     private static _addDocumentationPartForType(

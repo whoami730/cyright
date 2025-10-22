@@ -24,6 +24,7 @@ import { ConfigOptions, ExecutionEnvironment, getBasicDiagnosticRuleSet } from '
 import { ConsoleInterface, StandardConsole } from '../common/console';
 import { assert } from '../common/debug';
 import { convertLevelToCategory, Diagnostic, DiagnosticCategory } from '../common/diagnostic';
+import { DiagnosticRule } from '../common/diagnosticRules';
 import { DiagnosticSink, TextRangeDiagnosticSink } from '../common/diagnosticSink';
 import { TextEditAction } from '../common/editAction';
 import { FileSystem } from '../common/fileSystem';
@@ -172,7 +173,9 @@ export class SourceFile {
     private _typeIgnoreAll: IgnoreComment | undefined;
     private _pyrightIgnoreLines = new Map<number, IgnoreComment>();
 
-    // Settings that control which diagnostics should be output.
+    // Settings that control which diagnostics should be output. The rules
+    // are initialized to the basic set. They should be updated after the
+    // the file is parsed.
     private _diagnosticRuleSet = getBasicDiagnosticRuleSet();
 
     // Circular dependencies that have been reported in this file.
@@ -339,11 +342,7 @@ export class SourceFile {
         // Filter the diagnostics based on "pyright: ignore" lines.
         if (this._pyrightIgnoreLines.size > 0) {
             diagList = diagList.filter((d) => {
-                if (
-                    d.category !== DiagnosticCategory.UnusedCode &&
-                    d.category !== DiagnosticCategory.UnreachableCode &&
-                    d.category !== DiagnosticCategory.Deprecated
-                ) {
+                if (d.category !== DiagnosticCategory.UnreachableCode && d.category !== DiagnosticCategory.Deprecated) {
                     for (let line = d.range.start.line; line <= d.range.end.line; line++) {
                         const pyrightIgnoreComment = this._pyrightIgnoreLines.get(line);
                         if (pyrightIgnoreComment) {
@@ -415,7 +414,7 @@ export class SourceFile {
                 const rangeEnd = rangeStart + this._typeIgnoreAll.range.length;
                 const range = convertOffsetsToRange(rangeStart, rangeEnd, this._parseResults!.tokenizerOutput.lines!);
 
-                if (!isUnreachableCodeRange(range)) {
+                if (!isUnreachableCodeRange(range) && this._diagnosticRuleSet.enableTypeIgnoreComments) {
                     unnecessaryTypeIgnoreDiags.push(
                         new Diagnostic(diagCategory, Localizer.Diagnostic.unnecessaryTypeIgnore(), range)
                     );
@@ -432,7 +431,7 @@ export class SourceFile {
                         this._parseResults!.tokenizerOutput.lines!
                     );
 
-                    if (!isUnreachableCodeRange(range)) {
+                    if (!isUnreachableCodeRange(range) && this._diagnosticRuleSet.enableTypeIgnoreComments) {
                         unnecessaryTypeIgnoreDiags.push(
                             new Diagnostic(diagCategory, Localizer.Diagnostic.unnecessaryTypeIgnore(), range)
                         );
@@ -487,18 +486,18 @@ export class SourceFile {
             const category = convertLevelToCategory(this._diagnosticRuleSet.reportImportCycles);
 
             this._circularDependencies.forEach((cirDep) => {
-                diagList.push(
-                    new Diagnostic(
-                        category,
-                        Localizer.Diagnostic.importCycleDetected() +
-                            '\n' +
-                            cirDep
-                                .getPaths()
-                                .map((path) => '  ' + path)
-                                .join('\n'),
-                        getEmptyRange()
-                    )
+                const diag = new Diagnostic(
+                    category,
+                    Localizer.Diagnostic.importCycleDetected() +
+                        '\n' +
+                        cirDep
+                            .getPaths()
+                            .map((path) => '  ' + path)
+                            .join('\n'),
+                    getEmptyRange()
                 );
+                diag.setRule(DiagnosticRule.reportImportCycles);
+                diagList.push(diag);
             });
         }
 
@@ -660,7 +659,7 @@ export class SourceFile {
     getFileContent(): string | undefined {
         // Get current buffer content if the file is opened.
         const openFileContent = this.getOpenFileContents();
-        if (openFileContent) {
+        if (openFileContent !== undefined) {
             return openFileContent;
         }
 
@@ -1348,7 +1347,7 @@ export class SourceFile {
             try {
                 timingStats.typeCheckerTime.timeOperation(() => {
                     const checkDuration = new Duration();
-                    const checker = new Checker(importResolver, evaluator, this._parseResults!.parseTree, sourceMapper);
+                    const checker = new Checker(importResolver, evaluator, this._parseResults!, sourceMapper);
                     checker.check();
                     this._isCheckingNeeded = false;
 

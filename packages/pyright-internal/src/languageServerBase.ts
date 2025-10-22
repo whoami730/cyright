@@ -95,7 +95,7 @@ import {
 } from './common/commandLineOptions';
 import { ConfigOptions, getDiagLevelDiagnosticRules } from './common/configOptions';
 import { ConsoleInterface, ConsoleWithLogLevel, LogLevel } from './common/console';
-import { createDeferred, Deferred } from './common/deferred';
+import { createDeferred } from './common/deferred';
 import { Diagnostic as AnalyzerDiagnostic, DiagnosticCategory } from './common/diagnostic';
 import { DiagnosticRule } from './common/diagnosticRules';
 import { FileDiagnostics } from './common/diagnosticSink';
@@ -154,6 +154,45 @@ export enum WellKnownWorkspaceKinds {
     Test = 'test',
 }
 
+export function createInitStatus(): InitStatus {
+    // Due to the way we get `python path`, `include/exclude` from settings to initialize workspace,
+    // we need to wait for getSettings to finish before letting IDE features to use workspace (`isInitialized` field).
+    // So most of cases, whenever we create new workspace, we send request to workspace/configuration right way
+    // except one place which is `initialize` LSP call.
+    // In `initialize` method where we create `initial workspace`, we can't do that since LSP spec doesn't allow
+    // LSP server from sending any request to client until `initialized` method is called.
+    // This flag indicates whether we had our initial updateSetting call or not after `initialized` call.
+    let called = false;
+
+    const deferred = createDeferred<void>();
+    const self = {
+        promise: deferred.promise,
+        resolve: () => {
+            called = true;
+            deferred.resolve();
+        },
+        markCalled: () => {
+            called = true;
+        },
+        reset: () => {
+            if (!called) {
+                return self;
+            }
+
+            return createInitStatus();
+        },
+    };
+
+    return self;
+}
+
+export interface InitStatus {
+    resolve(): void;
+    reset(): InitStatus;
+    markCalled(): void;
+    promise: Promise<void>;
+}
+
 // path and uri will point to a workspace itself. It could be a folder
 // if the workspace represents a folder. it could be '' if it is the default workspace.
 // But it also could be a file if it is a virtual workspace.
@@ -168,7 +207,7 @@ export interface WorkspaceServiceInstance {
     disableLanguageServices: boolean;
     disableOrganizeImports: boolean;
     disableWorkspaceSymbol: boolean;
-    isInitialized: Deferred<boolean>;
+    isInitialized: InitStatus;
     searchPathsToWatch: string[];
 }
 
@@ -475,9 +514,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
     }
 
     async getWorkspaceForFile(filePath: string): Promise<WorkspaceServiceInstance> {
-        const workspace = this._workspaceMap.getWorkspaceForFile(this, filePath);
-        await workspace.isInitialized.promise;
-        return workspace;
+        return this._workspaceMap.getWorkspaceForFile(this, filePath);
     }
 
     reanalyze() {
@@ -547,6 +584,8 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
         this._connection.onRequest('textDocument/semanticTokens/full', async (params, token) =>
             this.onSemanticTokensFull(params, token)
         );
+
+        this._connection.onShutdown(async (token) => this.onShutdown(token));
     }
 
     protected initialize(
@@ -672,7 +711,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
                 const rootPath = this._uriParser.decodeTextDocumentUri(workspaceInfo.uri);
                 const newWorkspace = this.createWorkspaceServiceInstance(workspaceInfo, rootPath, rootPath);
                 this._workspaceMap.set(rootPath, newWorkspace);
-                this.updateSettingsForWorkspace(newWorkspace).ignoreErrors();
+                this.updateSettingsForWorkspace(newWorkspace, newWorkspace.isInitialized).ignoreErrors();
             });
 
             this._setupFileWatcher();
@@ -793,7 +832,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             return undefined;
         }
         return locations
-            .filter((loc) => !workspace.serviceInstance.fs.isInZipOrEgg(loc.path))
+            .filter((loc) => this.canNavigateToFile(loc.path, workspace.serviceInstance.fs))
             .map((loc) => Location.create(convertPathToUri(workspace.serviceInstance.fs, loc.path), loc.range));
     }
 
@@ -833,7 +872,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
 
             const convert = (locs: DocumentRange[]): Location[] => {
                 return locs
-                    .filter((loc) => !workspace.serviceInstance.fs.isInZipOrEgg(loc.path))
+                    .filter((loc) => this.canNavigateToFile(loc.path, workspace.serviceInstance.fs))
                     .map((loc) => Location.create(convertPathToUri(workspace.serviceInstance.fs, loc.path), loc.range));
             };
 
@@ -1145,7 +1184,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             return null;
         }
 
-        if (workspace.serviceInstance.fs.isInZipOrEgg(callItem.uri)) {
+        if (!this.canNavigateToFile(callItem.uri, workspace.serviceInstance.fs)) {
             return null;
         }
 
@@ -1168,7 +1207,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             return null;
         }
 
-        callItems = callItems.filter((item) => !workspace.serviceInstance.fs.isInZipOrEgg(item.from.uri));
+        callItems = callItems.filter((item) => this.canNavigateToFile(item.from.uri, workspace.serviceInstance.fs));
 
         // Convert the file paths in the items to proper URIs.
         callItems.forEach((item) => {
@@ -1194,7 +1233,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             return null;
         }
 
-        callItems = callItems.filter((item) => !workspace.serviceInstance.fs.isInZipOrEgg(item.to.uri));
+        callItems = callItems.filter((item) => this.canNavigateToFile(item.to.uri, workspace.serviceInstance.fs));
 
         // Convert the file paths in the items to proper URIs.
         callItems.forEach((item) => {
@@ -1306,6 +1345,12 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
         }
     }
 
+    protected onShutdown(token: CancellationToken) {
+        // Shutdown remaining workspaces.
+        this._workspaceMap.forEach((_, key) => this._workspaceMap.delete(key));
+        return Promise.resolve();
+    }
+
     protected resolveWorkspaceCompletionItem(
         workspace: WorkspaceServiceInstance,
         filePath: string,
@@ -1341,7 +1386,12 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
     updateSettingsForAllWorkspaces(): void {
         const tasks: Promise<void>[] = [];
         this._workspaceMap.forEach((workspace) => {
-            tasks.push(this.updateSettingsForWorkspace(workspace));
+            // Updating settings can change workspace's file ownership. Make workspace uninitialized so that
+            // features can wait until workspace gets new settings.
+            // the file's ownership can also changed by `pyrightconfig.json` changes, but those are synchronous
+            // operation, so it won't affect this.
+            workspace.isInitialized = workspace.isInitialized.reset();
+            tasks.push(this.updateSettingsForWorkspace(workspace, workspace.isInitialized));
         });
 
         Promise.all(tasks).then(() => {
@@ -1355,8 +1405,10 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             snippet: this.client.completionSupportsSnippet,
             lazyEdit: this.client.completionItemResolveSupportsAdditionalTextEdits,
             autoImport: true,
+            includeUserSymbolsInAutoImport: false,
             extraCommitChars: false,
             importFormat: ImportFormat.Absolute,
+            triggerCharacter: params?.context?.triggerCharacter,
         };
     }
 
@@ -1397,7 +1449,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             disableLanguageServices: false,
             disableOrganizeImports: false,
             disableWorkspaceSymbol: false,
-            isInitialized: createDeferred<boolean>(),
+            isInitialized: createInitStatus(),
             searchPathsToWatch: [],
         };
     }
@@ -1415,7 +1467,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
     protected onAnalysisCompletedHandler(fs: FileSystem, results: AnalysisResults): void {
         // Send the computed diagnostics to the client.
         results.diagnostics.forEach((fileDiag) => {
-            if (fs.isInZipOrEgg(fileDiag.filePath)) {
+            if (!this.canNavigateToFile(fileDiag.filePath, fs)) {
                 return;
             }
 
@@ -1450,9 +1502,11 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
 
     async updateSettingsForWorkspace(
         workspace: WorkspaceServiceInstance,
-        serverSettings?: ServerSettings,
-        initializeWorkspace = true
+        status: InitStatus | undefined,
+        serverSettings?: ServerSettings
     ): Promise<void> {
+        status?.markCalled();
+
         serverSettings = serverSettings ?? (await this.getSettings(workspace));
 
         // Set logging level first.
@@ -1462,10 +1516,10 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
         workspace.disableLanguageServices = !!serverSettings.disableLanguageServices;
         workspace.disableOrganizeImports = !!serverSettings.disableOrganizeImports;
 
-        if (initializeWorkspace) {
-            // The workspace is now open for business.
-            workspace.isInitialized.resolve(true);
-        }
+        // Don't use workspace.isInitialized directly since it might have been
+        // reset due to pending config change event.
+        // The workspace is now open for business.
+        status?.resolve();
     }
 
     updateOptionsAndRestartService(
@@ -1582,7 +1636,7 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
             const relatedInfo = diag.getRelatedInfo();
             if (relatedInfo.length > 0) {
                 vsDiag.relatedInformation = relatedInfo
-                    .filter((info) => !fs.isInZipOrEgg(info.filePath))
+                    .filter((info) => this.canNavigateToFile(info.filePath, fs))
                     .map((info) =>
                         DiagnosticRelatedInformation.create(
                             Location.create(convertPathToUri(fs, info.filePath), info.range),
@@ -1630,6 +1684,10 @@ export abstract class LanguageServerBase implements LanguageServerInterface {
     }
 
     protected abstract createProgressReporter(): ProgressReporter;
+
+    protected canNavigateToFile(path: string, fs: FileSystem): boolean {
+        return !fs.isInZipOrEgg(path);
+    }
 
     // ! Cython
     protected async onSemanticTokensFull(params: SemanticTokensParams, token: CancellationToken) {

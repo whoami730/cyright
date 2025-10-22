@@ -38,6 +38,7 @@ import {
     isUnion,
     isUnknown,
     isUnpackedClass,
+    isUnpackedVariadicTypeVar,
     isVariadicTypeVar,
     maxTypeRecursionCount,
     ModuleType,
@@ -454,6 +455,10 @@ export function isOptionalType(type: Type): boolean {
     return false;
 }
 
+export function isIncompleteUnknown(type: Type): boolean {
+    return isUnknown(type) && type.isIncomplete;
+}
+
 // Calls a callback for each subtype and combines the results
 // into a final type.
 export function mapSubtypes(type: Type, callback: (type: Type) => Type | undefined): Type {
@@ -795,7 +800,7 @@ export function getTypeCondition(type: Type): TypeCondition[] | undefined {
 
 // Indicates whether the specified type is a recursive type alias
 // placeholder that has not yet been resolved.
-export function isTypeAliasPlaceholder(type: Type): type is TypeVarType {
+export function isTypeAliasPlaceholder(type: Type): boolean {
     return isTypeVar(type) && TypeVarType.isTypeAliasPlaceholder(type);
 }
 
@@ -845,7 +850,21 @@ export function transformPossibleRecursiveTypeAlias(type: Type | undefined): Typ
         }
 
         if (isUnion(type) && type.includesTypeAliasPlaceholder) {
-            return mapSubtypes(type, (subtype) => transformPossibleRecursiveTypeAlias(subtype));
+            let newType = mapSubtypes(type, (subtype) => transformPossibleRecursiveTypeAlias(subtype));
+
+            if (newType !== type && type.typeAliasInfo) {
+                // Copy the type alias information if present.
+                newType = TypeBase.cloneForTypeAlias(
+                    newType,
+                    type.typeAliasInfo.name,
+                    type.typeAliasInfo.fullName,
+                    type.typeAliasInfo.typeVarScopeId,
+                    type.typeAliasInfo.typeParameters,
+                    type.typeAliasInfo.typeArguments
+                );
+            }
+
+            return newType;
         }
     }
 
@@ -1061,7 +1080,10 @@ export function isTupleClass(type: ClassType) {
 // the form tuple[x, ...] where the number of elements
 // in the tuple is unknown.
 export function isUnboundedTupleClass(type: ClassType) {
-    return type.tupleTypeArguments && type.tupleTypeArguments.some((t) => t.isUnbounded);
+    return (
+        type.tupleTypeArguments &&
+        type.tupleTypeArguments.some((t) => t.isUnbounded || isUnpackedVariadicTypeVar(t.type))
+    );
 }
 
 // Partially specializes a type within the context of a specified
@@ -1668,6 +1690,7 @@ export function buildTypeVarContext(
                                 category: param.category,
                                 name: param.name,
                                 hasDefault: !!param.hasDefault,
+                                defaultValueExpression: param.defaultValueExpression,
                                 isNameSynthesized: param.isNameSynthesized,
                                 type: FunctionType.getEffectiveParameterType(typeArgFunctionType, paramIndex),
                             });
@@ -2175,7 +2198,7 @@ export function specializeTupleClass(
 ): ClassType {
     let combinedTupleType = combineTypes(
         typeArgs.map((t) => {
-            if (isTypeVar(t.type) && t.type.isVariadicUnpacked && !t.type.isVariadicInUnion) {
+            if (isTypeVar(t.type) && isUnpackedVariadicTypeVar(t.type)) {
                 // Treat the unpacked TypeVarTuple as a union.
                 return TypeVarType.cloneForUnpacked(t.type, /* isInUnion */ true);
             }
@@ -2676,6 +2699,7 @@ export function convertParamSpecValueToType(paramSpecEntry: ParamSpecValue, omit
                 category: entry.category,
                 name: entry.name,
                 hasDefault: entry.hasDefault,
+                defaultValueExpression: entry.defaultValueExpression,
                 isNameSynthesized: entry.isNameSynthesized,
                 hasDeclaredType: true,
                 type: entry.type,
@@ -2957,7 +2981,7 @@ class TypeVarTransformer {
                     }
 
                     if (
-                        isVariadicTypeVar(oldTypeArgType.type) &&
+                        isUnpackedVariadicTypeVar(oldTypeArgType.type) &&
                         isClassInstance(newTypeArgType) &&
                         isTupleClass(newTypeArgType) &&
                         newTypeArgType.tupleTypeArguments
