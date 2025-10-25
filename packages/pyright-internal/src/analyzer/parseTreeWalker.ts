@@ -111,7 +111,7 @@ import {
 } from '../parser/parseNodes';
 
 // Get child nodes of the given node.
-export function getChildNodes(node: ParseNode) {
+export function getChildNodes(node: ParseNode): (ParseNode | undefined)[] {
     switch (node.nodeType) {
         case ParseNodeType.Error:
             return [node.child, ...(node.decorators ?? [])];

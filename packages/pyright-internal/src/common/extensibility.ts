@@ -1,35 +1,183 @@
 /*
-* completions.ts
+* extensibility.ts
 * Copyright (c) Microsoft Corporation.
 * Licensed under the MIT license.
 
-* Language service completion list extensibility.
+* Language service extensibility.
 */
 
-import { CancellationToken } from 'vscode-languageserver';
+import { CancellationToken, CodeAction, ExecuteCommandParams } from 'vscode-languageserver';
 
-import { CompletionResultsList } from '../languageService/completionProvider';
+import { getFileInfo } from '../analyzer/analyzerNodeInfo';
+import { Declaration } from '../analyzer/declaration';
+import { ImportResolver } from '../analyzer/importResolver';
+import { SourceFileInfo } from '../analyzer/program';
+import { SourceMapper } from '../analyzer/sourceMapper';
+import { TypeEvaluator } from '../analyzer/typeEvaluatorTypes';
+import { Type } from '../analyzer/types';
+import { LanguageServerBase } from '../languageServerBase';
+import { CompletionOptions, CompletionResultsList } from '../languageService/completionProvider';
+import { FunctionNode, ParameterNode, ParseNode } from '../parser/parseNodes';
 import { ParseResults } from '../parser/parser';
+import { ConfigOptions, SignatureDisplayType } from './configOptions';
+import { ConsoleInterface } from './console';
+import { Range } from './textRange';
 
 export interface LanguageServiceExtension {
-    readonly completionListExtension: CompletionListExtension;
+    readonly commandExtension?: CommandExtension;
 }
 
-export interface CompletionListExtension {
-    // Extension updates completion list provided by the application.
-    updateCompletionResults(
-        completionResults: CompletionResultsList,
-        parseResults: ParseResults,
-        position: number,
-        token: CancellationToken
-    ): Promise<void>;
+export interface ProgramExtension {
+    readonly completionListExtension?: CompletionListExtension;
+    readonly declarationProviderExtension?: DeclarationProviderExtension;
+    readonly typeProviderExtension?: TypeProviderExtension;
+    readonly codeActionExtension?: CodeActionExtension;
+    sourceFileChanged?: (sourceFileInfo: SourceFileInfo) => void;
+}
 
+// Readonly wrapper around a Program. Makes sure it doesn't mutate the program.
+export interface ProgramView {
+    readonly id: number;
+    rootPath: string;
+    getImportResolver(): ImportResolver;
+    console: ConsoleInterface;
+    getConfigOptions(): ConfigOptions;
+    owns(file: string): boolean;
+    getBoundSourceFileInfo(file: string): SourceFileInfo | undefined;
+}
+
+// Mutable wrapper around a program. Allows the FG thread to forward this request to the BG thread
+export interface ProgramMutator {
+    addTrackedFile(file: string, isThirdPartyImport: boolean): void;
+}
+
+export interface ExtensionFactory {
+    createProgramExtension: (view: ProgramView, mutator: ProgramMutator) => ProgramExtension;
+    createLanguageServiceExtension: (languageserver: LanguageServerBase) => LanguageServiceExtension;
+}
+
+export interface CommandExtension {
     // Prefix to tell extension commands from others.
     // For example, 'myextension'. Command name then
     // should be 'myextension.command'.
     readonly commandPrefix: string;
 
-    // Extension executes command attached to committed
-    // completion list item, if any.
-    executeCommand(command: string, args: any[] | undefined, token: CancellationToken): Promise<void>;
+    // Extension executes command
+    executeCommand(params: ExecuteCommandParams, token: CancellationToken): Promise<void>;
+}
+export interface CompletionListExtension {
+    // Extension updates completion list provided by the application.
+    updateCompletionResults(
+        evaluator: TypeEvaluator,
+        sourceMapper: SourceMapper,
+        options: CompletionOptions,
+        completionResults: CompletionResultsList,
+        parseResults: ParseResults,
+        position: number,
+        functionSignatureDisplay: SignatureDisplayType,
+        token: CancellationToken
+    ): Promise<void>;
+}
+
+export enum DeclarationUseCase {
+    Definition,
+    Rename,
+    References,
+}
+
+export interface DeclarationProviderExtension {
+    tryGetDeclarations(node: ParseNode, useCase: DeclarationUseCase, token: CancellationToken): Declaration[];
+}
+
+export interface TypeProviderExtension {
+    tryGetParameterNodeType(
+        node: ParameterNode,
+        evaluator: TypeEvaluator,
+        token: CancellationToken,
+        context?: {}
+    ): Type | undefined;
+    tryGetFunctionNodeType(node: FunctionNode, evaluator: TypeEvaluator, token: CancellationToken): Type | undefined;
+}
+
+export interface CodeActionExtension {
+    addCodeActions(
+        filePath: string,
+        range: Range,
+        parseResults: ParseResults,
+        codeActions: CodeAction[],
+        token: CancellationToken
+    ): void;
+}
+
+interface OwnedProgramExtension extends ProgramExtension {
+    readonly view: ProgramView;
+}
+
+interface OwnedLanguageServiceExtension extends LanguageServiceExtension {
+    readonly owner: LanguageServerBase;
+}
+
+export namespace Extensions {
+    const factories: ExtensionFactory[] = [];
+    let programExtensions: OwnedProgramExtension[] = [];
+    let languageServiceExtensions: OwnedLanguageServiceExtension[] = [];
+
+    export function register(entries: ExtensionFactory[]) {
+        factories.push(...entries);
+    }
+    export function createProgramExtensions(view: ProgramView, mutator: ProgramMutator) {
+        programExtensions.push(
+            ...(factories
+                .map((s) => {
+                    let result = s.createProgramExtension ? s.createProgramExtension(view, mutator) : undefined;
+                    if (result) {
+                        // Add the extra parameter that we use for finding later.
+                        result = Object.defineProperty(result, 'view', { value: view });
+                    }
+                    return result;
+                })
+                .filter((s) => !!s) as OwnedProgramExtension[])
+        );
+    }
+
+    export function destroyProgramExtensions(viewId: number) {
+        programExtensions = programExtensions.filter((s) => s.view.id !== viewId);
+    }
+
+    export function createLanguageServiceExtensions(languageServer: LanguageServerBase) {
+        languageServiceExtensions.push(
+            ...(factories
+                .map((s) => {
+                    let result = s.createLanguageServiceExtension
+                        ? s.createLanguageServiceExtension(languageServer)
+                        : undefined;
+                    if (result) {
+                        // Add the extra parameter that we use for finding later.
+                        result = Object.defineProperty(result, 'owner', { value: languageServer });
+                    }
+                    return result;
+                })
+                .filter((s) => !!s) as OwnedLanguageServiceExtension[])
+        );
+    }
+
+    export function destroyLanguageServiceExtensions(languageServer: LanguageServerBase) {
+        languageServiceExtensions = languageServiceExtensions.filter((s) => s.owner !== languageServer);
+    }
+
+    export function getProgramExtensions(nodeOrFilePath: ParseNode | string) {
+        const filePath =
+            typeof nodeOrFilePath === 'string' ? nodeOrFilePath.toString() : getFileInfo(nodeOrFilePath).filePath;
+        return programExtensions.filter((s) => s.view?.owns(filePath)) as ProgramExtension[];
+    }
+
+    export function getLanguageServiceExtensions() {
+        return languageServiceExtensions as LanguageServiceExtension[];
+    }
+
+    export function unregister() {
+        programExtensions.splice(0, programExtensions.length);
+        languageServiceExtensions.splice(0, languageServiceExtensions.length);
+        factories.splice(0, factories.length);
+    }
 }

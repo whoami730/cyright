@@ -8,7 +8,7 @@
  */
 
 import { assert } from '../common/debug';
-import { CStructType, CTrailType, CTypeNode, ExpressionNode, ParameterCategory } from '../parser/parseNodes';
+import { CStructType, CTrailType, CTypeNode, ExpressionNode, NameNode, ParameterCategory } from '../parser/parseNodes';
 import { FunctionDeclaration } from './declaration';
 import { Symbol, SymbolTable } from './symbol';
 
@@ -95,7 +95,16 @@ export type TypeVarScopeId = string;
 export const WildcardTypeVarScopeId = '*';
 
 export class EnumLiteral {
-    constructor(public className: string, public itemName: string, public itemType: Type) {}
+    constructor(
+        public classFullName: string,
+        public className: string,
+        public itemName: string,
+        public itemType: Type
+    ) {}
+
+    getName() {
+        return `${this.classFullName}.${this.itemName}`;
+    }
 }
 
 export type LiteralValue = number | bigint | boolean | string | EnumLiteral;
@@ -399,6 +408,7 @@ export interface DataClassEntry {
     isKeywordOnly: boolean;
     alias?: string | undefined;
     hasDefault?: boolean | undefined;
+    nameNode: NameNode | undefined;
     defaultValueExpression?: ExpressionNode | undefined;
     includeInInit: boolean;
     type: Type;
@@ -1543,6 +1553,7 @@ export namespace FunctionType {
                     (FunctionTypeFlags.ClassMethod |
                         FunctionTypeFlags.StaticMethod |
                         FunctionTypeFlags.ConstructorMethod |
+                        FunctionTypeFlags.Overloaded |
                         FunctionTypeFlags.SkipArgsKwargsCompatibilityCheck)) |
                 FunctionTypeFlags.SynthesizedMethod;
 
@@ -2068,6 +2079,7 @@ export interface UnionType extends TypeBase {
     subtypes: UnionableType[];
     literalStrMap?: Map<string, UnionableType> | undefined;
     literalIntMap?: Map<bigint | number, UnionableType> | undefined;
+    literalEnumMap?: Map<string, UnionableType> | undefined;
     typeAliasSources?: Set<UnionType>;
     includesRecursiveTypeAlias?: boolean;
 }
@@ -2084,7 +2096,7 @@ export namespace UnionType {
     }
 
     export function addType(unionType: UnionType, newType: UnionableType) {
-        // If we're adding a string literal or integer type, add it to the
+        // If we're adding a string, integer or enum literal, add it to the
         // corresponding literal map to speed up some operations. It's not
         // uncommon for unions to contain hundreds of literals.
         if (isClassInstance(newType) && newType.literalValue !== undefined && newType.condition === undefined) {
@@ -2098,6 +2110,12 @@ export namespace UnionType {
                     unionType.literalIntMap = new Map<bigint | number, UnionableType>();
                 }
                 unionType.literalIntMap.set(newType.literalValue as number | bigint, newType);
+            } else if (ClassType.isEnumClass(newType)) {
+                if (unionType.literalEnumMap === undefined) {
+                    unionType.literalEnumMap = new Map<string, UnionableType>();
+                }
+                const enumLiteral = newType.literalValue as EnumLiteral;
+                unionType.literalEnumMap.set(enumLiteral.getName(), newType);
             }
         }
 
@@ -2127,6 +2145,9 @@ export namespace UnionType {
                 return unionType.literalStrMap.has(subtype.literalValue as string);
             } else if (ClassType.isBuiltIn(subtype, 'int') && unionType.literalIntMap !== undefined) {
                 return unionType.literalIntMap.has(subtype.literalValue as number | bigint);
+            } else if (ClassType.isEnumClass(subtype) && unionType.literalEnumMap !== undefined) {
+                const enumLiteral = subtype.literalValue as EnumLiteral;
+                return unionType.literalEnumMap.has(enumLiteral.getName());
             }
         }
 
@@ -3075,6 +3096,16 @@ function _addTypeIfUnique(unionType: UnionType, typeToAdd: UnionableType) {
             unionType.literalIntMap !== undefined
         ) {
             if (!unionType.literalIntMap.has(typeToAdd.literalValue as number | bigint)) {
+                UnionType.addType(unionType, typeToAdd);
+            }
+            return;
+        } else if (
+            ClassType.isEnumClass(typeToAdd) &&
+            typeToAdd.literalValue !== undefined &&
+            unionType.literalEnumMap !== undefined
+        ) {
+            const enumLiteral = typeToAdd.literalValue as EnumLiteral;
+            if (!unionType.literalEnumMap.has(enumLiteral.getName())) {
                 UnionType.addType(unionType, typeToAdd);
             }
             return;

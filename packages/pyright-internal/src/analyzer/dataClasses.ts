@@ -28,6 +28,7 @@ import { updateNamedTupleBaseClass } from './namedTuples';
 import { getEnclosingClassOrFunction } from './parseTreeUtils';
 import { evaluateStaticBoolExpression } from './staticExpressions';
 import { Symbol, SymbolFlags } from './symbol';
+import { isPrivateName } from './symbolNameUtils';
 import { EvaluatorFlags, FunctionArgument, TypeEvaluator } from './typeEvaluatorTypes';
 import {
     AnyType,
@@ -186,10 +187,12 @@ export function synthesizeDataClassMethods(
                     // If the RHS of the assignment is assigning a field instance where the
                     // "init" parameter is set to false, do not include it in the init method.
                     if (statement.rightExpression.nodeType === ParseNodeType.Call) {
-                        const callType = evaluator.getTypeOfExpression(
+                        const callTypeResult = evaluator.getTypeOfExpression(
                             statement.rightExpression.leftExpression,
                             EvaluatorFlags.DoNotSpecialize
-                        ).type;
+                        );
+                        const callType = callTypeResult.type;
+
                         if (
                             isDataclassFieldConstructor(
                                 callType,
@@ -218,7 +221,7 @@ export function synthesizeDataClassMethods(
                                 } else if (isOverloadedFunction(callType)) {
                                     callTarget = evaluator.getBestOverloadForArguments(
                                         statement.rightExpression,
-                                        callType,
+                                        { type: callType, isIncomplete: callTypeResult.isIncomplete },
                                         statement.rightExpression.arguments
                                     );
                                 } else if (isInstantiableClass(callType)) {
@@ -229,7 +232,7 @@ export function synthesizeDataClassMethods(
                                         } else if (isOverloadedFunction(initCall)) {
                                             callTarget = evaluator.getBestOverloadForArguments(
                                                 statement.rightExpression,
-                                                initCall,
+                                                { type: initCall },
                                                 statement.rightExpression.arguments
                                             );
                                         }
@@ -347,6 +350,7 @@ export function synthesizeDataClassMethods(
                             hasDefault: hasDefaultValue,
                             defaultValueExpression,
                             includeInInit,
+                            nameNode: variableNameNode,
                             type: UnknownType.create(),
                             isClassVar: true,
                         };
@@ -363,6 +367,7 @@ export function synthesizeDataClassMethods(
                             hasDefault: hasDefaultValue,
                             defaultValueExpression,
                             includeInInit,
+                            nameNode: variableNameNode,
                             type: UnknownType.create(),
                             isClassVar: false,
                         };
@@ -402,7 +407,12 @@ export function synthesizeDataClassMethods(
                                 (p) => p.hasDefault && p.includeInInit && !p.isKeywordOnly
                             );
                             if (firstDefaultValueIndex >= 0 && firstDefaultValueIndex < insertIndex) {
-                                evaluator.addError(Localizer.Diagnostic.dataClassFieldWithDefault(), variableNameNode);
+                                evaluator.addDiagnostic(
+                                    AnalyzerNodeInfo.getFileInfo(node).diagnosticRuleSet.reportGeneralTypeIssues,
+                                    DiagnosticRule.reportGeneralTypeIssues,
+                                    Localizer.Diagnostic.dataClassFieldWithDefault(),
+                                    variableNameNode
+                                );
                             }
                         }
                     }
@@ -482,9 +492,15 @@ export function synthesizeDataClassMethods(
                     // type of the __init__ method parameter from the __set__ method.
                     effectiveType = transformDescriptorType(evaluator, effectiveType);
 
+                    const effectiveName = entry.alias || entry.name;
+
+                    if (!entry.alias && entry.nameNode && isPrivateName(entry.nameNode.value)) {
+                        evaluator.addError(Localizer.Diagnostic.dataClassFieldWithPrivateName(), entry.nameNode);
+                    }
+
                     const functionParam: FunctionParameter = {
                         category: ParameterCategory.Simple,
-                        name: entry.alias || entry.name,
+                        name: effectiveName,
                         hasDefault: entry.hasDefault,
                         defaultValueExpression: entry.defaultValueExpression,
                         type: effectiveType,

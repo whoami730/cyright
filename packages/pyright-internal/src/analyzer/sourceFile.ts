@@ -20,9 +20,15 @@ import { isMainThread } from 'worker_threads';
 
 import * as SymbolNameUtils from '../analyzer/symbolNameUtils';
 import { OperationCanceledException } from '../common/cancellationUtils';
-import { ConfigOptions, ExecutionEnvironment, getBasicDiagnosticRuleSet } from '../common/configOptions';
+import {
+    ConfigOptions,
+    ExecutionEnvironment,
+    getBasicDiagnosticRuleSet,
+    SignatureDisplayType,
+} from '../common/configOptions';
 import { ConsoleInterface, StandardConsole } from '../common/console';
 import { assert } from '../common/debug';
+import { TaskListToken } from '../common/diagnostic';
 import { convertLevelToCategory, Diagnostic, DiagnosticCategory } from '../common/diagnostic';
 import { DiagnosticRule } from '../common/diagnosticRules';
 import { DiagnosticSink, TextRangeDiagnosticSink } from '../common/diagnosticSink';
@@ -31,7 +37,7 @@ import { FileSystem } from '../common/fileSystem';
 import { LogTracker } from '../common/logTracker';
 import { fromLSPAny } from '../common/lspUtils';
 import { getFileExtension, getFileName, normalizeSlashes, stripFileExtension } from '../common/pathUtils';
-import { convertOffsetsToRange } from '../common/positionUtils';
+import { convertOffsetsToRange, convertTextRangeToRange } from '../common/positionUtils';
 import * as StringUtils from '../common/stringUtils';
 import { DocumentRange, getEmptyRange, Position, Range, TextRange } from '../common/textRange';
 import { TextRangeCollection } from '../common/textRangeCollection';
@@ -49,7 +55,7 @@ import { ReferenceCallback, ReferencesProvider, ReferencesResult } from '../lang
 import { CythonSemanticTokenProvider } from '../languageService/semanticTokens';
 import { SignatureHelpProvider, SignatureHelpResults } from '../languageService/signatureHelpProvider';
 import { Localizer } from '../localization/localize';
-import { ModuleNode, NameNode } from '../parser/parseNodes';
+import { ModuleNode } from '../parser/parseNodes';
 import { ModuleImport, ParseOptions, Parser, ParseResults } from '../parser/parser';
 import { IgnoreComment } from '../parser/tokenizer';
 import { Token } from '../parser/tokenizerTypes';
@@ -89,8 +95,6 @@ export enum IPythonMode {
     // Not a notebook. This is the only falsy enum value, so you
     // can test if IPython is supported via "if (ipythonMode)"
     None = 0,
-    // All cells are concatenated into a single document.
-    ConcatDoc,
     // Each cell is its own document.
     CellDocs,
 }
@@ -168,6 +172,7 @@ export class SourceFile {
 
     // Diagnostics generated during different phases of analysis.
     private _parseDiagnostics: Diagnostic[] = [];
+    private _commentDiagnostics: Diagnostic[] = [];
     private _bindDiagnostics: Diagnostic[] = [];
     private _checkerDiagnostics: Diagnostic[] = [];
     private _typeIgnoreLines = new Map<number, IgnoreComment>();
@@ -313,7 +318,12 @@ export class SourceFile {
             includeWarningsAndErrors = false;
         }
 
-        let diagList = [...this._parseDiagnostics, ...this._bindDiagnostics, ...this._checkerDiagnostics];
+        let diagList = [
+            ...this._parseDiagnostics,
+            ...this._commentDiagnostics,
+            ...this._bindDiagnostics,
+            ...this._checkerDiagnostics,
+        ];
         const prefilteredDiagList = diagList;
         const typeIgnoreLinesClone = new Map(this._typeIgnoreLines);
         const pyrightIgnoreLinesClone = new Map(this._pyrightIgnoreLines);
@@ -512,6 +522,9 @@ export class SourceFile {
             );
         }
 
+        // add diagnostics for comments that match the task list tokens
+        this._addTaskListDiagnostics(options.taskListTokens, diagList);
+
         // If the file is in the ignore list, clear the diagnostic list.
         if (options.ignore.find((ignoreFileSpec) => ignoreFileSpec.regExp.test(this._realFilePath))) {
             diagList = [];
@@ -546,6 +559,64 @@ export class SourceFile {
         }
 
         return diagList;
+    }
+
+    // Get all task list diagnostics for the current file and add them
+    // to the specified diagnostic list
+    private _addTaskListDiagnostics(taskListTokens: TaskListToken[] | undefined, diagList: Diagnostic[]) {
+        // input validation
+        if (!taskListTokens || taskListTokens.length === 0 || !diagList) {
+            return;
+        }
+
+        // if we have no tokens, we're done
+        if (!this._parseResults?.tokenizerOutput?.tokens) {
+            return;
+        }
+
+        const tokenizerOutput = this._parseResults.tokenizerOutput;
+        for (let i = 0; i < tokenizerOutput.tokens.count; i++) {
+            const token = tokenizerOutput.tokens.getItemAt(i);
+
+            // if there are no comments, skip this token
+            if (!token.comments || token.comments.length === 0) {
+                continue;
+            }
+
+            for (const comment of token.comments) {
+                for (const token of taskListTokens) {
+                    // Check if the comment matches the task list token.
+                    // The comment must start with zero or more whitespace characters,
+                    // followed by the taskListToken (case insensitive),
+                    // followed by (0+ whitespace + EOL) OR (1+ NON-alphanumeric characters)
+                    const regexStr = '^[\\s]*' + token.text + '([\\s]*$|[\\W]+)';
+                    const regex = RegExp(regexStr, 'i'); // case insensitive
+
+                    // if the comment doesn't match, skip it
+                    if (!regex.test(comment.value)) {
+                        continue;
+                    }
+
+                    // Calculate the range for the diagnostic
+                    // This allows navigation to the comment via double clicking the item in the task list pane
+                    let rangeStart = comment.start;
+
+                    // The comment technically starts right after the comment identifier (#), but we want the caret right
+                    // before the task list token (since there might be whitespace before it)
+                    const indexOfToken = comment.value.toLowerCase().indexOf(token.text.toLowerCase());
+                    rangeStart += indexOfToken;
+
+                    const rangeEnd = TextRange.getEnd(comment);
+                    const range = convertOffsetsToRange(rangeStart, rangeEnd, tokenizerOutput.lines!);
+
+                    // Add the diagnostic to the list to send to VS,
+                    // and trim whitespace from the comment so it's easier to read in the task list
+                    diagList.push(
+                        new Diagnostic(DiagnosticCategory.TaskItem, comment.value.trim(), range, token.priority)
+                    );
+                }
+            }
+        }
     }
 
     getImports(): ImportResult[] {
@@ -822,26 +893,16 @@ export class SourceFile {
                 }
             }
 
-            // Use the configuration options to determine the environment in which
-            // this source file will be executed.
-            const execEnvironment = configOptions.findExecEnvironment(this._filePath);
-
-            const parseOptions = new ParseOptions();
-            parseOptions.ipythonMode = this._ipythonMode;
-            // ! Cython
-            if (
-                this._filePath.endsWith('pyi') ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/cython_builtins.pxi'))
-            ) {
-                parseOptions.isStubFile = true;
-            }
-            parseOptions.pythonVersion = execEnvironment.pythonVersion;
-            parseOptions.skipFunctionAndClassBody = configOptions.indexGenerationMode ?? false;
-
             try {
                 // Parse the token stream, building the abstract syntax tree.
-                const parser = new Parser();
-                const parseResults = parser.parseSourceFile(fileContents!, parseOptions, diagSink);
+                const parseResults = parseFile(
+                    configOptions,
+                    this._filePath,
+                    fileContents!,
+                    this._ipythonMode,
+                    diagSink
+                );
+
                 assert(parseResults !== undefined && parseResults.tokenizerOutput !== undefined);
                 this._parseResults = parseResults;
                 this._typeIgnoreLines = this._parseResults.tokenizerOutput.typeIgnoreLines;
@@ -849,6 +910,7 @@ export class SourceFile {
                 this._pyrightIgnoreLines = this._parseResults.tokenizerOutput.pyrightIgnoreLines;
 
                 // Resolve imports.
+                const execEnvironment = configOptions.findExecEnvironment(this._filePath);
                 timingStats.resolveImportsTime.timeOperation(() => {
                     const importResult = this._resolveImports(
                         importResolver,
@@ -870,11 +932,25 @@ export class SourceFile {
                     configOptions.strict.find((strictFileSpec) => strictFileSpec.regExp.test(this._realFilePath)) !==
                     undefined;
 
+                const commentDiags: CommentUtils.CommentDiagnostic[] = [];
                 this._diagnosticRuleSet = CommentUtils.getFileLevelDirectives(
                     this._parseResults.tokenizerOutput.tokens,
                     configOptions.diagnosticRuleSet,
-                    useStrict
+                    useStrict,
+                    commentDiags
                 );
+
+                this._commentDiagnostics = [];
+
+                commentDiags.forEach((commentDiag) => {
+                    this._commentDiagnostics.push(
+                        new Diagnostic(
+                            DiagnosticCategory.Error,
+                            commentDiag.message,
+                            convertTextRangeToRange(commentDiag.range, this._parseResults!.tokenizerOutput.lines)
+                        )
+                    );
+                });
             } catch (e: any) {
                 const message: string =
                     (e.stack ? e.stack.toString() : undefined) ||
@@ -978,19 +1054,6 @@ export class SourceFile {
         );
     }
 
-    getDefinitionsForNode(
-        sourceMapper: SourceMapper,
-        node: NameNode,
-        evaluator: TypeEvaluator
-    ): DocumentRange[] | undefined {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return undefined;
-        }
-
-        return DefinitionProvider.getDefinitionsForNode(sourceMapper, node, DefinitionFilter.All, evaluator);
-    }
-
     getTypeDefinitionsForPosition(
         sourceMapper: SourceMapper,
         position: Position,
@@ -1009,30 +1072,6 @@ export class SourceFile {
             position,
             evaluator,
             filePath,
-            token
-        );
-    }
-
-    getDeclarationForNode(
-        sourceMapper: SourceMapper,
-        node: NameNode,
-        evaluator: TypeEvaluator,
-        reporter: ReferenceCallback | undefined,
-        useCase: DocumentSymbolCollectorUseCase,
-        token: CancellationToken
-    ): ReferencesResult | undefined {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return undefined;
-        }
-
-        return ReferencesProvider.getDeclarationForNode(
-            sourceMapper,
-            this._filePath,
-            node,
-            evaluator,
-            reporter,
-            useCase,
             token
         );
     }
@@ -1119,6 +1158,7 @@ export class SourceFile {
         position: Position,
         format: MarkupKind,
         evaluator: TypeEvaluator,
+        functionSignatureDisplay: SignatureDisplayType,
         token: CancellationToken
     ): HoverResults | undefined {
         // If this file hasn't been bound, no hover info is available.
@@ -1126,7 +1166,15 @@ export class SourceFile {
             return undefined;
         }
 
-        return HoverProvider.getHoverForPosition(sourceMapper, this._parseResults, position, format, evaluator, token);
+        return HoverProvider.getHoverForPosition(
+            sourceMapper,
+            this._parseResults,
+            position,
+            format,
+            evaluator,
+            functionSignatureDisplay,
+            token
+        );
     }
 
     getDocumentHighlight(
@@ -1346,9 +1394,8 @@ export class SourceFile {
     check(
         importResolver: ImportResolver,
         evaluator: TypeEvaluator,
-        execEnv: ExecutionEnvironment,
         sourceMapper: SourceMapper,
-        isUserCode: (p: string) => boolean
+        dependentFiles?: ParseResults[]
     ) {
         assert(!this.isParseRequired(), 'Check called before parsing');
         assert(!this.isBindingRequired(), 'Check called before binding');
@@ -1360,7 +1407,13 @@ export class SourceFile {
             try {
                 timingStats.typeCheckerTime.timeOperation(() => {
                     const checkDuration = new Duration();
-                    const checker = new Checker(importResolver, evaluator, this._parseResults!, sourceMapper);
+                    const checker = new Checker(
+                        importResolver,
+                        evaluator,
+                        this._parseResults!,
+                        sourceMapper,
+                        dependentFiles
+                    );
                     checker.check();
                     this._isCheckingNeeded = false;
 
@@ -1561,4 +1614,34 @@ export class SourceFile {
         }
         return CythonSemanticTokenProvider.provideSemanticTokensFull(this._parseResults, evaluator, token);
     }
+}
+
+export function parseFile(
+    configOptions: ConfigOptions,
+    filePath: string,
+    fileContents: string,
+    ipythonMode: IPythonMode,
+    diagSink: DiagnosticSink
+) {
+    // Use the configuration options to determine the environment in which
+    // this source file will be executed.
+    const execEnvironment = configOptions.findExecEnvironment(filePath);
+
+    const parseOptions = new ParseOptions();
+    parseOptions.ipythonMode = ipythonMode;
+
+    // ! Cython
+    if (
+        filePath.endsWith('pyi') ||
+        filePath.endsWith(normalizeSlashes('stdlib/cython_builtins.pxi'))
+    ) {
+        parseOptions.isStubFile = true;
+    }
+
+    parseOptions.pythonVersion = execEnvironment.pythonVersion;
+    parseOptions.skipFunctionAndClassBody = configOptions.indexGenerationMode ?? false;
+
+    // Parse the token stream, building the abstract syntax tree.
+    const parser = new Parser();
+    return parser.parseSourceFile(fileContents, parseOptions, diagSink);
 }

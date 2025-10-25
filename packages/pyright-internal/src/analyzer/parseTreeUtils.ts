@@ -8,17 +8,19 @@
  */
 
 import * as AnalyzerNodeInfo from '../analyzer/analyzerNodeInfo';
+import { containsOnlyWhitespace } from '../common/core';
 import { assert, assertNever, fail } from '../common/debug';
 import { convertPositionToOffset, convertTextRangeToRange } from '../common/positionUtils';
 import { Position, Range } from '../common/textRange';
 import { TextRange } from '../common/textRange';
-import { TextRangeCollection } from '../common/textRangeCollection';
+import { getIndexContaining, TextRangeCollection } from '../common/textRangeCollection';
 import {
     ArgumentCategory,
     ArgumentNode,
     AssignmentExpressionNode,
     CallNode,
     ClassNode,
+    DecoratorNode,
     EvaluationScopeNode,
     ExecutionScopeNode,
     ExpressionNode,
@@ -42,6 +44,8 @@ import {
     TypeAnnotationNode,
     TypeParameterScopeNode,
 } from '../parser/parseNodes';
+import { ParseResults } from '../parser/parser';
+import * as StringTokenUtils from '../parser/stringTokenUtils';
 import { TokenizerOutput } from '../parser/tokenizer';
 import { KeywordType, OperatorType, StringToken, StringTokenFlags, Token, TokenType } from '../parser/tokenizerTypes';
 import { getScope } from './analyzerNodeInfo';
@@ -94,23 +98,44 @@ export function findNodeByOffset(node: ParseNode, offset: number): ParseNode | u
 
     // The range is found within this node. See if we can localize it
     // further by checking its children.
-    const children = getChildNodes(node);
-    for (const child of children) {
-        if (child) {
-            const containingChild = findNodeByOffset(child, offset);
-            if (containingChild) {
-                // For augmented assignments, prefer the dest expression, which is a clone
-                // of the left expression but is used to hold the type of the operation result.
-                if (node.nodeType === ParseNodeType.AugmentedAssignment && containingChild === node.leftExpression) {
-                    return node.destExpression;
-                }
+    let children = getChildNodes(node);
+    if (isCompliantWithNodeRangeRules(node) && children.length > 20) {
+        // Use binary search to find the child to visit. This should be helpful
+        // when there are many siblings, such as statements in a module/suite
+        // or expressions in a list, etc. Otherwise, we will have to traverse
+        // every sibling before finding the correct one.
+        const index = getIndexContaining(children, offset);
+        if (index >= 0) {
+            children = [children[index]];
+        }
+    }
 
-                return containingChild;
+    for (const child of children) {
+        if (!child) {
+            continue;
+        }
+
+        const containingChild = findNodeByOffset(child, offset);
+        if (containingChild) {
+            // For augmented assignments, prefer the dest expression, which is a clone
+            // of the left expression but is used to hold the type of the operation result.
+            if (node.nodeType === ParseNodeType.AugmentedAssignment && containingChild === node.leftExpression) {
+                return node.destExpression;
             }
+
+            return containingChild;
         }
     }
 
     return node;
+}
+
+export function isCompliantWithNodeRangeRules(node: ParseNode) {
+    // ParseNode range rules are
+    // 1. Children are all contained within the parent.
+    // 2. Children have non-overlapping ranges.
+    // 3. Children are listed in increasing order.
+    return node.nodeType !== ParseNodeType.Assignment && node.nodeType !== ParseNodeType.StringList;
 }
 
 export function getClassFullName(classNode: ParseNode, moduleName: string, className: string): string {
@@ -517,6 +542,25 @@ export function printOperator(operator: OperatorType): string {
     }
 
     return 'unknown';
+}
+
+// If the name node is the LHS of a call expression or is a member
+// name in the LHS of a call expression, returns the call node.
+export function getCallForName(node: NameNode): CallNode | undefined {
+    if (node.parent?.nodeType === ParseNodeType.Call && node.parent.leftExpression === node) {
+        return node.parent;
+    }
+
+    if (
+        node.parent?.nodeType === ParseNodeType.MemberAccess &&
+        node.parent.memberName === node &&
+        node.parent.parent?.nodeType === ParseNodeType.Call &&
+        node.parent.parent.leftExpression === node.parent
+    ) {
+        return node.parent.parent;
+    }
+
+    return undefined;
 }
 
 export function getEnclosingSuite(node: ParseNode): SuiteNode | undefined {
@@ -1525,7 +1569,7 @@ export function getCallNodeAndActiveParameterIndex(
     while (curNode !== undefined) {
         // make sure we only look at callNodes when we are inside their arguments
         if (curNode.nodeType === ParseNodeType.Call) {
-            if (isOffsetInsideCallArgs(curNode, insertionOffset)) {
+            if (isOffsetInsideCallArgs(tokens, curNode, insertionOffset)) {
                 callNode = curNode;
                 break;
             }
@@ -1600,19 +1644,77 @@ export function getCallNodeAndActiveParameterIndex(
         activeOrFake,
     };
 
-    function isOffsetInsideCallArgs(node: CallNode, offset: number) {
-        let found = true;
+    function isOffsetInsideCallArgs(tokens: TextRangeCollection<Token>, node: CallNode, offset: number) {
         const argumentStart =
             node.leftExpression.length > 0 ? TextRange.getEnd(node.leftExpression) - 1 : node.leftExpression.start;
-        const index = tokens.getItemAtPosition(argumentStart);
-        if (index >= 0 && index + 1 < tokens.count) {
-            const token = tokens.getItemAt(index + 1);
-            if (token.type === TokenType.OpenParenthesis && insertionOffset < TextRange.getEnd(token)) {
-                // position must be after '('
-                found = false;
+
+        // Handle obvious case first.
+        const callEndOffset = TextRange.getEnd(node);
+        if (offset < argumentStart || callEndOffset < offset) {
+            return false;
+        }
+
+        if (node.arguments.length > 0) {
+            const start = node.arguments[0].start;
+            const end = TextRange.getEnd(node.arguments[node.arguments.length - 1]);
+            if (start <= offset && offset < end) {
+                return true;
             }
         }
-        return found;
+
+        const index = tokens.getItemAtPosition(argumentStart);
+        if (index < 0 || tokens.count <= index) {
+            // Somehow, we can't get token. To be safe, we will allow
+            // signature help to show up.
+            return true;
+        }
+
+        const token = tokens.getItemAt(index);
+        if (
+            token.type === TokenType.String &&
+            (token as StringToken).flags & StringTokenFlags.Format &&
+            TextRange.contains(token, offset)
+        ) {
+            // tokenizer won't tokenize format string segments. We get one token
+            // for the whole format string. We need to dig in.
+            const stringToken = token as StringToken;
+            const result = StringTokenUtils.getUnescapedString(stringToken);
+            const offsetInSegment = offset - stringToken.start - stringToken.prefixLength - stringToken.quoteMarkLength;
+            const segment = result.formatStringSegments.find(
+                (s) => s.offset <= offsetInSegment && offsetInSegment < s.offset + s.length
+            );
+            if (!segment || !segment.isExpression) {
+                // Just to be safe, allow signature help.
+                return true;
+            }
+
+            const length = Math.min(
+                segment.length,
+                callEndOffset -
+                    stringToken.start -
+                    stringToken.prefixLength -
+                    stringToken.quoteMarkLength -
+                    segment.offset
+            );
+
+            for (let i = offsetInSegment - segment.offset; i < length; i++) {
+                const ch = segment.value[i];
+                if (ch === '(') {
+                    // position must be after '('
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        const nextToken = tokens.getItemAt(index + 1);
+        if (nextToken.type === TokenType.OpenParenthesis && offset < TextRange.getEnd(nextToken)) {
+            // position must be after '('
+            return false;
+        }
+
+        return true;
     }
 }
 
@@ -2186,6 +2288,31 @@ export function getDottedNameWithGivenNodeAsLastName(node: NameNode): MemberAcce
     return node.parent;
 }
 
+//
+// Returns the dotted name that makes up the expression for the decorator.
+// Example:
+// @pytest.fixture()
+// def my_fixture():
+//    pass
+//
+// would return `pytest.fixture`
+export function getDecoratorName(decorator: DecoratorNode): string | undefined {
+    function getExpressionName(node: ExpressionNode): string | undefined {
+        if (node.nodeType === ParseNodeType.Name || node.nodeType === ParseNodeType.MemberAccess) {
+            return getDottedName(node)
+                ?.map((n) => n.value)
+                .join('.');
+        }
+        if (node.nodeType === ParseNodeType.Call) {
+            return getExpressionName(node.leftExpression);
+        }
+
+        return undefined;
+    }
+
+    return getExpressionName(decorator.expression);
+}
+
 export function getDottedName(node: MemberAccessNode | NameNode): NameNode[] | undefined {
     // ex) [a] or [a].b
     // simple case, [a]
@@ -2279,7 +2406,12 @@ export function getStringValueRange(token: StringToken) {
     return TextRange.create(token.start + length, token.length - length - (hasEnding ? length : 0));
 }
 
-export function getFullStatementRange(statementNode: ParseNode, tokenizerOutput: TokenizerOutput): Range {
+export function getFullStatementRange(
+    statementNode: ParseNode,
+    parseResults: ParseResults,
+    options?: { includeTrailingBlankLines: boolean }
+): Range {
+    const tokenizerOutput = parseResults.tokenizerOutput;
     const range = convertTextRangeToRange(statementNode, tokenizerOutput.lines);
 
     const start = _getStartPositionIfMultipleStatementsAreOnSameLine(range, statementNode.start, tokenizerOutput) ?? {
@@ -2303,7 +2435,24 @@ export function getFullStatementRange(statementNode: ParseNode, tokenizerOutput:
         return { start, end: range.end };
     }
 
-    return { start, end: { line: range.end.line + 1, character: 0 } };
+    let lineDeltaToAdd = 1;
+    if (options) {
+        if (options.includeTrailingBlankLines) {
+            for (let i = lineDeltaToAdd; range.end.line + i < tokenizerOutput.lines.count; i++) {
+                if (!isBlankLine(parseResults, range.end.line + i)) {
+                    lineDeltaToAdd = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    return { start, end: { line: range.end.line + lineDeltaToAdd, character: 0 } };
+}
+
+export function isBlankLine(parseResults: ParseResults, line: number) {
+    const span = parseResults.tokenizerOutput.lines.getItemAt(line);
+    return containsOnlyWhitespace(parseResults.text, span);
 }
 
 export function isUnannotatedFunction(node: FunctionNode) {

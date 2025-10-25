@@ -8,9 +8,11 @@
  */
 
 import assert from 'assert';
+import * as os from 'os';
 import * as path from 'path';
 
 import { Comparison } from '../common/core';
+import { expandPathVariables } from '../common/envVarUtils';
 import {
     changeAnyExtension,
     combinePathComponents,
@@ -32,6 +34,7 @@ import {
     getWildcardRegexPattern,
     getWildcardRoot,
     hasTrailingDirectorySeparator,
+    isDirectoryWildcardPatternPresent,
     isFileSystemCaseSensitiveInternal,
     isRootedDiskPath,
     normalizeSlashes,
@@ -150,7 +153,6 @@ test('getWildcardRegexPattern2', () => {
     const pattern = getWildcardRegexPattern('/users/me', './**/*.py?');
     const regex = new RegExp(pattern);
     assert.ok(regex.test(fixSeparators('/users/me/.blah/foo.pyd')));
-    assert.ok(!regex.test(fixSeparators('/users/me/./foo.py')));
     assert.ok(!regex.test(fixSeparators('/users/me/.blah/foo.py'))); // No char after
 });
 
@@ -159,6 +161,26 @@ test('getWildcardRegexPattern3', () => {
     const regex = new RegExp(pattern);
     assert.ok(regex.test(fixSeparators('/users/me/.blah/.foo.py')));
     assert.ok(!regex.test(fixSeparators('/users/me/.blah/foo.py')));
+});
+
+test('isDirectoryWildcardPatternPresent1', () => {
+    const isPresent = isDirectoryWildcardPatternPresent('./**/*.py');
+    assert.equal(isPresent, true);
+});
+
+test('isDirectoryWildcardPatternPresent2', () => {
+    const isPresent = isDirectoryWildcardPatternPresent('./**/a/*.py');
+    assert.equal(isPresent, true);
+});
+
+test('isDirectoryWildcardPatternPresent3', () => {
+    const isPresent = isDirectoryWildcardPatternPresent('./**/@tests');
+    assert.equal(isPresent, true);
+});
+
+test('isDirectoryWildcardPatternPresent4', () => {
+    const isPresent = isDirectoryWildcardPatternPresent('./**/test/test*');
+    assert.equal(isPresent, true);
 });
 
 test('getWildcardRoot1', () => {
@@ -207,6 +229,32 @@ test('resolvePath1', () => {
 
 test('resolvePath2', () => {
     assert.equal(resolvePaths('/path', 'to', '..', 'from', 'file.ext/'), normalizeSlashes('/path/from/file.ext/'));
+});
+
+test('resolvePath3 ~ escape', () => {
+    const homedir = os.homedir();
+    assert.equal(
+        resolvePaths(expandPathVariables('', '~/path'), 'to', '..', 'from', 'file.ext/'),
+        normalizeSlashes(`${homedir}/path/from/file.ext/`)
+    );
+});
+
+test('resolvePath4 ~ escape in middle', () => {
+    const homedir = os.homedir();
+    assert.equal(
+        resolvePaths('/path', expandPathVariables('', '~/file.ext/')),
+        normalizeSlashes(`${homedir}/file.ext/`)
+    );
+});
+
+test('invalid ~ without root', () => {
+    const path = combinePaths('Library', 'Mobile Documents', 'com~apple~CloudDocs', 'Development', 'mysuperproject');
+    assert.equal(resolvePaths(expandPathVariables('/src', path)), path);
+});
+
+test('invalid ~ with root', () => {
+    const path = combinePaths('/', 'Library', 'com~apple~CloudDocs', 'Development', 'mysuperproject');
+    assert.equal(resolvePaths(expandPathVariables('/src', path)), path);
 });
 
 test('comparePaths1', () => {

@@ -7,7 +7,6 @@
  * the test states.
  */
 import assert from 'assert';
-import * as JSONC from 'jsonc-parser';
 import * as path from 'path';
 import Char from 'typescript-char';
 import {
@@ -29,10 +28,10 @@ import { BackgroundAnalysisProgramFactory } from '../../../analyzer/backgroundAn
 import { ImportResolver, ImportResolverFactory } from '../../../analyzer/importResolver';
 import { findNodeByOffset } from '../../../analyzer/parseTreeUtils';
 import { Program } from '../../../analyzer/program';
-import { AnalyzerService, configFileNames } from '../../../analyzer/service';
+import { AnalyzerService } from '../../../analyzer/service';
 import { CommandResult } from '../../../commands/commandResult';
 import { appendArray } from '../../../common/collectionUtils';
-import { ConfigOptions } from '../../../common/configOptions';
+import { ConfigOptions, SignatureDisplayType } from '../../../common/configOptions';
 import { ConsoleInterface, NullConsole } from '../../../common/console';
 import { Comparison, isNumber, isString, toBoolean } from '../../../common/core';
 import * as debug from '../../../common/debug';
@@ -42,7 +41,6 @@ import {
     combinePaths,
     comparePaths,
     convertPathToUri,
-    getBaseFileName,
     getDirectoryPath,
     getFileExtension,
     getFileSpec,
@@ -50,7 +48,6 @@ import {
     normalizeSlashes,
 } from '../../../common/pathUtils';
 import { convertOffsetToPosition, convertPositionToOffset } from '../../../common/positionUtils';
-import { getStringComparer } from '../../../common/stringUtils';
 import { DocumentRange, Position, Range as PositionRange, rangesAreEqual, TextRange } from '../../../common/textRange';
 import { TextRangeCollection } from '../../../common/textRangeCollection';
 import {
@@ -84,6 +81,7 @@ import {
     TestCancellationToken,
 } from './fourSlashTypes';
 import { TestFeatures, TestLanguageService } from './testLanguageService';
+import { createVfsInfoFromFourSlashData, getMarkerByName, getMarkerName, getMarkerNames } from './testStateUtils';
 import { verifyWorkspaceEdit } from './workspaceEditTestUtils';
 
 export interface TextChange {
@@ -1331,7 +1329,12 @@ export class TestState {
         const configOptions = new ConfigOptions(projectRoot);
 
         // add more global options as we need them
-        return this._applyTestConfigOptions(configOptions, mountPaths);
+        const newConfigOptions = this._applyTestConfigOptions(configOptions, mountPaths);
+
+        // default tests to run use compact signatures.
+        newConfigOptions.functionSignatureDisplay = SignatureDisplayType.compact;
+
+        return newConfigOptions;
     }
 
     private _applyTestConfigOptions(configOptions: ConfigOptions, mountPaths?: Map<string, string>) {
@@ -1355,6 +1358,10 @@ export class TestState {
             for (const mountPath of mountPaths.keys()) {
                 configOptions.exclude.push(getFileSpec(this.fs, configOptions.projectRoot, mountPath));
             }
+        }
+
+        if (configOptions.functionSignatureDisplay === undefined) {
+            configOptions.functionSignatureDisplay === SignatureDisplayType.compact;
         }
 
         return configOptions;
@@ -1797,7 +1804,7 @@ export class TestState {
         }
 
         if (expected.commitCharacters !== undefined) {
-            expect(expected.commitCharacters.sort()).toEqual(actual.commitCharacters?.sort());
+            expect(expected.commitCharacters.sort()).toEqual(actual.commitCharacters?.sort() ?? []);
         }
     }
 }
@@ -1854,67 +1861,4 @@ export function getNodeAtMarker(codeOrState: string | TestState, markerName = 'm
     assert(node);
 
     return node;
-}
-
-export function createVfsInfoFromFourSlashData(projectRoot: string, testData: FourSlashData) {
-    const metaProjectRoot = testData.globalOptions[GlobalMetadataOptionNames.projectRoot];
-    projectRoot = metaProjectRoot ? combinePaths(projectRoot, metaProjectRoot) : projectRoot;
-
-    const ignoreCase = toBoolean(testData.globalOptions[GlobalMetadataOptionNames.ignoreCase]);
-
-    let rawConfigJson = '';
-    const sourceFileNames: string[] = [];
-    const files: vfs.FileSet = {};
-
-    for (const file of testData.files) {
-        // if one of file is configuration file, set config options from the given json
-        if (isConfig(file, ignoreCase)) {
-            try {
-                rawConfigJson = JSONC.parse(file.content);
-            } catch (e: any) {
-                throw new Error(`Failed to parse test ${file.fileName}: ${e.message}`);
-            }
-        } else {
-            files[file.fileName] = new vfs.File(file.content, { meta: file.fileOptions, encoding: 'utf8' });
-
-            if (!toBoolean(file.fileOptions[MetadataOptionNames.library])) {
-                sourceFileNames.push(file.fileName);
-            }
-        }
-    }
-    return { files, sourceFileNames, projectRoot, ignoreCase, rawConfigJson };
-}
-
-export function getMarkerName(testData: FourSlashData, markerToFind: Marker) {
-    let found: string | undefined;
-    testData.markerPositions.forEach((marker, name) => {
-        if (marker === markerToFind) {
-            found = name;
-        }
-    });
-
-    assert.ok(found);
-    return found!;
-}
-
-export function getMarkerByName(testData: FourSlashData, markerName: string) {
-    const markerPos = testData.markerPositions.get(markerName);
-    if (markerPos === undefined) {
-        throw new Error(
-            `Unknown marker "${markerName}" Available markers: ${getMarkerNames(testData)
-                .map((m) => '"' + m + '"')
-                .join(', ')}`
-        );
-    } else {
-        return markerPos;
-    }
-}
-
-export function getMarkerNames(testData: FourSlashData): string[] {
-    return [...testData.markerPositions.keys()];
-}
-
-function isConfig(file: FourSlashFile, ignoreCase: boolean): boolean {
-    const comparer = getStringComparer(ignoreCase);
-    return configFileNames.some((f) => comparer(getBaseFileName(file.fileName), f) === Comparison.EqualTo);
 }

@@ -513,11 +513,11 @@ test('TypeAlias4', () => {
 
     configOptions.defaultPythonVersion = PythonVersion.V3_9;
     const analysisResults3_9 = TestUtils.typeAnalyzeSampleFiles(['typeAlias4.py'], configOptions);
-    TestUtils.validateResults(analysisResults3_9, 10);
+    TestUtils.validateResults(analysisResults3_9, 11);
 
     configOptions.defaultPythonVersion = PythonVersion.V3_10;
     const analysisResults3_10 = TestUtils.typeAnalyzeSampleFiles(['typeAlias4.py'], configOptions);
-    TestUtils.validateResults(analysisResults3_10, 9);
+    TestUtils.validateResults(analysisResults3_10, 10);
 });
 
 test('TypeAlias5', () => {
@@ -1171,6 +1171,11 @@ test('List2', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('List3', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['list3.py']);
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('Comparison1', () => {
     const configOptions = new ConfigOptions('.');
 
@@ -1190,7 +1195,7 @@ test('Comparison2', () => {
 
     configOptions.diagnosticRuleSet.reportUnnecessaryComparison = 'error';
     const analysisResults2 = TestUtils.typeAnalyzeSampleFiles(['comparison2.py'], configOptions);
-    TestUtils.validateResults(analysisResults2, 7);
+    TestUtils.validateResults(analysisResults2, 9);
 });
 
 test('EmptyContainers1', () => {

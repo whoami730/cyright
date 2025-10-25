@@ -115,6 +115,17 @@ export interface FunctionDeclaration extends DeclarationBase {
 export interface ParameterDeclaration extends DeclarationBase {
     type: DeclarationType.Parameter;
     node: ParameterNode;
+
+    // Documentation specified in the function's docstring (if any) can be
+    // associated with the parameter
+    docString?: string;
+
+    // Inferred parameters can be inferred from pieces of an actual NameNode, so this
+    // value represents the actual 'name' as the user thinks of it.
+    inferredName?: string;
+
+    // Nodes that potentially makeup the type of an inferred parameter.
+    inferredTypeNodes?: ExpressionNode[];
 }
 
 export interface TypeParameterDeclaration extends DeclarationBase {
@@ -180,6 +191,9 @@ export interface VariableDeclaration extends DeclarationBase {
 
     // If an "attribute docstring" (as defined in PEP 258) is present...
     docString?: string | undefined;
+
+    // If set, indicates an alternative node to use to determine the type of the variable.
+    alternativeTypeNode?: ExpressionNode;
 
     // ! Cython
     // If is compile time constant; defined with 'DEF'

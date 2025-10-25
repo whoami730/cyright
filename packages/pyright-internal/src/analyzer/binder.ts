@@ -125,6 +125,7 @@ import {
     TypeParameterDeclaration,
     VariableDeclaration,
 } from './declaration';
+import { extractParameterDocumentation } from './docStringUtils';
 import { ImplicitImport, ImportResult, ImportType } from './importResult';
 import * as ParseTreeUtils from './parseTreeUtils';
 import { ParseTreeWalker } from './parseTreeWalker';
@@ -161,7 +162,7 @@ interface ClassVarInfo {
 // amount to the complexity factor. Without this, the complexity
 // calculation fails to take into account large numbers of non-cyclical
 // flow nodes. This number is somewhat arbitrary and is tuned empirically.
-const flowNodeComplexityFactor = 0.05;
+const flowNodeComplexityContribution = 0.05;
 
 export class Binder extends ParseTreeWalker {
     private readonly _fileInfo: AnalyzerFileInfo;
@@ -536,6 +537,13 @@ export class Binder extends ParseTreeWalker {
                 node.parameters.forEach((paramNode) => {
                     if (paramNode.name) {
                         const symbol = this._bindNameToScope(this._currentScope, paramNode.name);
+
+                        // Extract the parameter docString from the function docString
+                        let docString = ParseTreeUtils.getDocString(node?.suite?.statements ?? []);
+                        if (docString !== undefined) {
+                            docString = extractParameterDocumentation(docString, paramNode.name.value);
+                        }
+
                         if (symbol) {
                             const paramDeclaration: ParameterDeclaration = {
                                 type: DeclarationType.Parameter,
@@ -544,6 +552,7 @@ export class Binder extends ParseTreeWalker {
                                 range: convertTextRangeToRange(paramNode, this._fileInfo.lines),
                                 moduleName: this._fileInfo.moduleName,
                                 isInExceptSuite: this._isInExceptSuite,
+                                docString: docString,
                             };
 
                             symbol.addDeclaration(paramDeclaration);
@@ -1918,7 +1927,7 @@ export class Binder extends ParseTreeWalker {
                             node: importSymbolNode,
                             path: implicitImport.path,
                             loadSymbolsFromPath: true,
-                            range: convertTextRangeToRange(importSymbolNode, this._fileInfo.lines),
+                            range: getEmptyRange(),
                             usesLocalName: false,
                             moduleName: this._fileInfo.moduleName,
                             isInExceptSuite: this._isInExceptSuite,
@@ -2991,6 +3000,20 @@ export class Binder extends ParseTreeWalker {
                                 expressionList.push(expression.leftExpression);
                             }
                         }
+
+                        // If the expression is an index expression with a supported
+                        // subscript, add its baseExpression to the expression list because
+                        // that expression can be narrowed.
+                        if (
+                            expression.nodeType === ParseNodeType.Index &&
+                            expression.items.length === 1 &&
+                            !expression.trailingComma &&
+                            expression.items[0].argumentCategory === ArgumentCategory.Simple
+                        ) {
+                            if (isCodeFlowSupportedForReference(expression.baseExpression)) {
+                                expressionList.push(expression.baseExpression);
+                            }
+                        }
                     }
                     return true;
                 }
@@ -3055,20 +3078,8 @@ export class Binder extends ParseTreeWalker {
                     );
 
                     // Look for "X is Y" or "X is not Y".
-                    if (isOrIsNotOperator) {
-                        return isLeftNarrowing;
-                    }
-
-                    // Look for X == <literal>, X != <literal> or <literal> == X, <literal> != X
-                    if (equalsOrNotEqualsOperator) {
-                        const isRightNarrowing = this._isNarrowingExpression(
-                            expression.rightExpression,
-                            expressionList,
-                            filterForNeverNarrowing,
-                            /* isComplexExpression */ true
-                        );
-                        return isLeftNarrowing || isRightNarrowing;
-                    }
+                    // Look for X == <literal> or X != <literal>
+                    return isLeftNarrowing;
                 }
 
                 // Look for "<string> in Y" or "<string> not in Y".
@@ -4283,7 +4294,7 @@ export class Binder extends ParseTreeWalker {
     }
 
     private _getUniqueFlowNodeId() {
-        this._codeFlowComplexity += flowNodeComplexityFactor;
+        this._codeFlowComplexity += flowNodeComplexityContribution;
         return getUniqueFlowNodeId();
     }
 

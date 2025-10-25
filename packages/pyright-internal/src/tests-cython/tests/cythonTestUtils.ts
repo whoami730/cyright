@@ -38,6 +38,7 @@ const categoryNameMap: Record<DiagnosticCategory, string> = {
     [DiagnosticCategory.UnusedCode]: 'Unused',
     [DiagnosticCategory.UnreachableCode]: 'Unreachable',
     [DiagnosticCategory.Deprecated]: 'Deprecated',
+    [DiagnosticCategory.TaskItem]: 'TaskItem', // Not relevant, should be ignored.
 };
 
 
