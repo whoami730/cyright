@@ -43,7 +43,7 @@ test('Required3', () => {
 
 test('Metaclass1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['metaclass1.py']);
-    TestUtils.validateResults(analysisResults, 0);
+    TestUtils.validateResults(analysisResults, 2);
 });
 
 test('Metaclass2', () => {
@@ -204,6 +204,11 @@ test('Import14', () => {
 
 test('Import15', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['import15.py']);
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Import16', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['import16.py']);
     TestUtils.validateResults(analysisResults, 0);
 });
 

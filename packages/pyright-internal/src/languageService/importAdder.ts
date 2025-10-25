@@ -16,6 +16,7 @@ import {
     isClassDeclaration,
     isFunctionDeclaration,
     isParameterDeclaration,
+    isUnresolvedAliasDeclaration,
     isVariableDeclaration,
     ModuleLoaderActions,
 } from '../analyzer/declaration';
@@ -52,7 +53,7 @@ import { isArray } from '../common/core';
 import { TextEditAction } from '../common/editAction';
 import { getDirectoryPath } from '../common/pathUtils';
 import { convertOffsetToPosition } from '../common/positionUtils';
-import { TextEditTracker } from '../common/textEditUtils';
+import { TextEditTracker } from '../common/textEditTracker';
 import { TextRange } from '../common/textRange';
 import { ModuleNameNode, NameNode, ParseNode, ParseNodeType } from '../parser/parseNodes';
 import { ParseResults } from '../parser/parser';
@@ -82,6 +83,7 @@ export class ImportAdder {
 
     applyImports(
         result: ImportData,
+        filePath: string,
         parseResults: ParseResults,
         insertionPosition: number,
         importFormat: ImportFormat,
@@ -89,7 +91,6 @@ export class ImportAdder {
     ): TextEditAction[] {
         throwIfCancellationRequested(token);
 
-        const filePath = getFileInfo(parseResults.parseTree).filePath;
         const importStatements = getTopLevelImports(parseResults.parseTree);
         const importNameInfo = this._getImportNameWithModuleInfo(filePath, result, importFormat);
 
@@ -145,7 +146,7 @@ export class ImportAdder {
         const execEnv = this._configOptions.findExecEnvironment(filePath);
         for (const decl of result.declarations.keys() ?? []) {
             const importInfo = this._getImportInfo(decl, filePath);
-            if (!importInfo) {
+            if (!importInfo || isUnresolvedAliasDeclaration(decl)) {
                 continue;
             }
 
@@ -378,6 +379,10 @@ class NameCollector extends ParseTreeWalker {
     }
 
     override visitName(name: NameNode) {
+        if (!TextRange.containsRange(this._range, name)) {
+            return false;
+        }
+
         throwIfCancellationRequested(this._token);
 
         // We process dotted name as a whole rather than

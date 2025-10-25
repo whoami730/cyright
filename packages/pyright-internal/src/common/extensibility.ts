@@ -32,7 +32,8 @@ export interface ProgramExtension {
     readonly declarationProviderExtension?: DeclarationProviderExtension;
     readonly typeProviderExtension?: TypeProviderExtension;
     readonly codeActionExtension?: CodeActionExtension;
-    sourceFileChanged?: (sourceFileInfo: SourceFileInfo) => void;
+    fileDirty?: (filePath: string) => void;
+    clearCache?: () => void;
 }
 
 // Readonly wrapper around a Program. Makes sure it doesn't mutate the program.
@@ -43,12 +44,12 @@ export interface ProgramView {
     console: ConsoleInterface;
     getConfigOptions(): ConfigOptions;
     owns(file: string): boolean;
-    getBoundSourceFileInfo(file: string): SourceFileInfo | undefined;
+    getBoundSourceFileInfo(file: string, content?: string, force?: boolean): SourceFileInfo | undefined;
 }
 
 // Mutable wrapper around a program. Allows the FG thread to forward this request to the BG thread
 export interface ProgramMutator {
-    addTrackedFile(file: string, isThirdPartyImport: boolean): void;
+    addInterimFile(file: string): void;
 }
 
 export interface ExtensionFactory {
@@ -86,7 +87,12 @@ export enum DeclarationUseCase {
 }
 
 export interface DeclarationProviderExtension {
-    tryGetDeclarations(node: ParseNode, useCase: DeclarationUseCase, token: CancellationToken): Declaration[];
+    tryGetDeclarations(
+        evaluator: TypeEvaluator,
+        node: ParseNode,
+        useCase: DeclarationUseCase,
+        token: CancellationToken
+    ): Declaration[];
 }
 
 export interface TypeProviderExtension {
@@ -101,6 +107,7 @@ export interface TypeProviderExtension {
 
 export interface CodeActionExtension {
     addCodeActions(
+        evaluator: TypeEvaluator,
         filePath: string,
         range: Range,
         parseResults: ParseResults,
@@ -165,10 +172,35 @@ export namespace Extensions {
         languageServiceExtensions = languageServiceExtensions.filter((s) => s.owner !== languageServer);
     }
 
+    function getBestProgram(filePath: string): ProgramView {
+        // Find the best program to use for this file.
+        const programs = [...new Set<ProgramView>(programExtensions.map((s) => s.view))];
+        let bestProgram: ProgramView | undefined;
+        programs.forEach((program) => {
+            // If the file is tracked by this program, use it.
+            if (program.owns(filePath)) {
+                if (!bestProgram || filePath.startsWith(program.rootPath)) {
+                    bestProgram = program;
+                }
+            }
+        });
+
+        // If we didn't find a program that tracks the file, use the first one that claims ownership.
+        if (bestProgram === undefined) {
+            if (programs.length === 1) {
+                bestProgram = programs[0];
+            } else {
+                bestProgram = programs.find((p) => p.getBoundSourceFileInfo(filePath)) || programs[0];
+            }
+        }
+        return bestProgram;
+    }
+
     export function getProgramExtensions(nodeOrFilePath: ParseNode | string) {
         const filePath =
             typeof nodeOrFilePath === 'string' ? nodeOrFilePath.toString() : getFileInfo(nodeOrFilePath).filePath;
-        return programExtensions.filter((s) => s.view?.owns(filePath)) as ProgramExtension[];
+        const bestProgram = getBestProgram(filePath);
+        return programExtensions.filter((s) => s.view === bestProgram) as ProgramExtension[];
     }
 
     export function getLanguageServiceExtensions() {

@@ -71,6 +71,7 @@ export class DefinitionProvider {
         Extensions.getProgramExtensions(node).forEach((e) => {
             if (e.declarationProviderExtension) {
                 const declarations = e.declarationProviderExtension.tryGetDeclarations(
+                    evaluator,
                     node,
                     DeclarationUseCase.Definition,
                     token
@@ -206,7 +207,7 @@ export class DefinitionProvider {
 
                     if (isFunctionDeclaration(resolvedDecl)) {
                         // Handle overloaded function case
-                        const functionType = evaluator.getTypeForDeclaration(resolvedDecl);
+                        const functionType = evaluator.getTypeForDeclaration(resolvedDecl)?.type;
                         if (functionType && isOverloadedFunction(functionType)) {
                             for (const overloadDecl of functionType.overloads
                                 .map((o) => o.details.declaration)

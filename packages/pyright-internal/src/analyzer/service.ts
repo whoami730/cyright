@@ -57,7 +57,7 @@ import {
 } from '../common/pathUtils';
 import { DocumentRange, Position, Range } from '../common/textRange';
 import { timingStats } from '../common/timing';
-import { AutoImportOptions } from '../languageService/autoImporter';
+import { AutoImportOptions, ImportFormat } from '../languageService/autoImporter';
 import { AbbreviationMap, CompletionOptions, CompletionResultsList } from '../languageService/completionProvider';
 import { DefinitionFilter } from '../languageService/definitionProvider';
 import { WorkspaceSymbolCallback } from '../languageService/documentSymbolProvider';
@@ -132,7 +132,6 @@ export class AnalyzerService {
     private _backgroundAnalysisProgram: BackgroundAnalysisProgram;
     private _backgroundAnalysisCancellationSource: AbstractCancellationTokenSource | undefined;
     private _disposed = false;
-
     private _pendingLibraryChanges: RefreshOptions = { changesOnly: true };
 
     constructor(instanceName: string, fs: FileSystem, options: AnalyzerServiceOptions) {
@@ -177,7 +176,7 @@ export class AnalyzerService {
 
         // Create the extensions tied to this program. This is where the mutating 'addTrackedFile' will actually
         // mutate the local program and the BG thread one.
-        Extensions.createProgramExtensions(this._program, { addTrackedFile: this.addTrackedFile.bind(this) });
+        Extensions.createProgramExtensions(this._program, { addInterimFile: this.addInterimFile.bind(this) });
     }
 
     clone(
@@ -194,7 +193,7 @@ export class AnalyzerService {
         });
 
         // Cloned service will use whatever user files the service currently has.
-        const userFiles = this.backgroundAnalysisProgram.program.getTracked().map((i) => i.sourceFile.getFilePath());
+        const userFiles = this.getUserFiles();
         service.backgroundAnalysisProgram.setTrackedFiles(userFiles);
         service.backgroundAnalysisProgram.markAllFilesDirty(true);
 
@@ -245,7 +244,7 @@ export class AnalyzerService {
         return this._options.importResolverFactory!;
     }
 
-    private get _cancellationProvider() {
+    get cancellationProvider() {
         return this._options.cancellationProvider!;
     }
 
@@ -287,12 +286,20 @@ export class AnalyzerService {
         this._applyConfigOptions(host);
     }
 
-    contains(filePath: string): boolean {
-        return this.backgroundAnalysisProgram.contains(filePath);
+    hasSourceFile(filePath: string): boolean {
+        return this.backgroundAnalysisProgram.hasSourceFile(filePath);
     }
 
     isTracked(filePath: string): boolean {
         return this._program.owns(filePath);
+    }
+
+    getUserFiles() {
+        return this._program.getUserFiles().map((i) => i.sourceFile.getFilePath());
+    }
+
+    getOpenFiles() {
+        return this._program.getOpened().map((i) => i.sourceFile.getFilePath());
     }
 
     setFileOpened(
@@ -303,8 +310,11 @@ export class AnalyzerService {
         chainedFilePath?: string,
         realFilePath?: string
     ) {
+        // Open the file. Notebook cells are always tracked as they aren't 3rd party library files.
+        // This is how it's worked in the past since each notebook used to have its own
+        // workspace and the workspace include setting marked all cells as tracked.
         this._backgroundAnalysisProgram.setFileOpened(path, version, contents, {
-            isTracked: this.isTracked(path),
+            isTracked: this.isTracked(path) || ipythonMode !== IPythonMode.None,
             ipythonMode,
             chainedFilePath,
             realFilePath,
@@ -346,8 +356,8 @@ export class AnalyzerService {
         this._scheduleReanalysis(/* requireTrackedFileUpdate */ false);
     }
 
-    addTrackedFile(path: string, isThirdPartyImport: boolean) {
-        this._backgroundAnalysisProgram.addTrackedFile(path, isThirdPartyImport);
+    addInterimFile(path: string) {
+        this._backgroundAnalysisProgram.addInterimFile(path);
     }
 
     getParseResult(path: string) {
@@ -478,6 +488,16 @@ export class AnalyzerService {
         token: CancellationToken
     ): TextEditAction[] | undefined {
         return this._program.performQuickAction(filePath, command, args, token);
+    }
+
+    moveSymbolAtPosition(
+        filePath: string,
+        newFilePath: string,
+        position: Position,
+        options: { importFormat: ImportFormat },
+        token: CancellationToken
+    ): FileEditActions | undefined {
+        return this._program.moveSymbolAtPosition(filePath, newFilePath, position, options, token);
     }
 
     renameModule(filePath: string, newFilePath: string, token: CancellationToken): FileEditActions | undefined {
@@ -1068,7 +1088,13 @@ export class AnalyzerService {
 
     private _parseJsonConfigFile(configPath: string): object | undefined {
         return this._attemptParseFile(configPath, (fileContents) => {
-            return JSONC.parse(fileContents);
+            const errors: JSONC.ParseError[] = [];
+            const result = JSONC.parse(fileContents, errors, { allowTrailingComma: true });
+            if (errors.length > 0) {
+                throw new Error('Errors parsing JSON file');
+            }
+
+            return result;
         });
     }
 
@@ -1235,6 +1261,8 @@ export class AnalyzerService {
             this._console.info(`Searching for source files`);
             fileList = this._getFileNamesFromFileSpecs();
 
+            // getFileNamesFromFileSpecs might have updated configOptions, resync options.
+            this._backgroundAnalysisProgram.setConfigOptions(this._configOptions);
             this._backgroundAnalysisProgram.setTrackedFiles(fileList);
             this._backgroundAnalysisProgram.markAllFilesDirty(markFilesDirtyUnconditionally);
 
@@ -1284,6 +1312,11 @@ export class AnalyzerService {
 
             if (this._configOptions.autoExcludeVenv) {
                 if (envMarkers.some((f) => this.fs.existsSync(combinePaths(absolutePath, ...f)))) {
+                    // Save auto exclude paths in the configOptions once we found them.
+                    if (!FileSpec.isInPath(absolutePath, exclude)) {
+                        exclude.push(getFileSpec(this.fs, this._configOptions.projectRoot, `${absolutePath}/**`));
+                    }
+
                     this._console.info(`Auto-excluding ${absolutePath}`);
                     return;
                 }
@@ -1793,7 +1826,7 @@ export class AnalyzerService {
             }
 
             // This creates a cancellation source only if it actually gets used.
-            this._backgroundAnalysisCancellationSource = this._cancellationProvider.createCancellationTokenSource();
+            this._backgroundAnalysisCancellationSource = this.cancellationProvider.createCancellationTokenSource();
             const moreToAnalyze = this._backgroundAnalysisProgram.startAnalysis(
                 this._backgroundAnalysisCancellationSource.token
             );

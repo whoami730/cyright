@@ -33,6 +33,7 @@ import { convertLevelToCategory, Diagnostic, DiagnosticCategory } from '../commo
 import { DiagnosticRule } from '../common/diagnosticRules';
 import { DiagnosticSink, TextRangeDiagnosticSink } from '../common/diagnosticSink';
 import { TextEditAction } from '../common/editAction';
+import { Extensions } from '../common/extensibility';
 import { FileSystem } from '../common/fileSystem';
 import { LogTracker } from '../common/logTracker';
 import { fromLSPAny } from '../common/lspUtils';
@@ -696,6 +697,8 @@ export class SourceFile {
         this._indexingNeeded = indexingNeeded;
         this._moduleSymbolTable = undefined;
         this._cachedIndexResults = undefined;
+        const filePath = this.getFilePath();
+        Extensions.getProgramExtensions(filePath).forEach((e) => (e.fileDirty ? e.fileDirty(filePath) : null));
     }
 
     markReanalysisRequired(forceRebinding: boolean): void {
@@ -1082,7 +1085,8 @@ export class SourceFile {
         evaluator: TypeEvaluator,
         reporter: ReferenceCallback | undefined,
         useCase: DocumentSymbolCollectorUseCase,
-        token: CancellationToken
+        token: CancellationToken,
+        implicitlyImportedBy?: SourceFile[]
     ): ReferencesResult | undefined {
         // If we have no completed analysis job, there's nothing to do.
         if (!this._parseResults) {
@@ -1097,7 +1101,8 @@ export class SourceFile {
             evaluator,
             reporter,
             useCase,
-            token
+            token,
+            implicitlyImportedBy
         );
     }
 
@@ -1583,7 +1588,20 @@ export class SourceFile {
             // Associate the import results with the module import
             // name node in the parse tree so we can access it later
             // (for hover and definition support).
-            AnalyzerNodeInfo.setImportInfo(moduleImport.nameNode, importResult);
+            if (moduleImport.nameParts.length === moduleImport.nameNode.nameParts.length) {
+                AnalyzerNodeInfo.setImportInfo(moduleImport.nameNode, importResult);
+            } else {
+                // For implicit imports of higher-level modules within a multi-part
+                // module name, the moduleImport.nameParts will refer to the subset
+                // of the multi-part name rather than the full multi-part name. In this
+                // case, store the import info on the name part node.
+                assert(moduleImport.nameParts.length > 0);
+                assert(moduleImport.nameParts.length - 1 < moduleImport.nameNode.nameParts.length);
+                AnalyzerNodeInfo.setImportInfo(
+                    moduleImport.nameNode.nameParts[moduleImport.nameParts.length - 1],
+                    importResult
+                );
+            }
         }
 
         return {

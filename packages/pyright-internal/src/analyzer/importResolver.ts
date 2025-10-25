@@ -11,7 +11,7 @@
 import type { Dirent } from 'fs';
 
 import { appendArray, flatten, getMapValues, getOrAdd } from '../common/collectionUtils';
-import { ConfigOptions, ExecutionEnvironment } from '../common/configOptions';
+import { ConfigOptions, ExecutionEnvironment, matchFileSpecs } from '../common/configOptions';
 import { FileSystem } from '../common/fileSystem';
 import { Host } from '../common/host';
 import { stubsSuffix } from '../common/pathConsts';
@@ -206,6 +206,7 @@ export class ImportResolver {
         let current = origin;
         while (this._shouldWalkUp(current, root, execEnv)) {
             const result = this.resolveAbsoluteImport(
+                sourceFilePath,
                 current,
                 execEnv,
                 moduleDescriptor,
@@ -250,6 +251,7 @@ export class ImportResolver {
         moduleDescriptor: ImportedModuleDescriptor,
         importFailureInfo: string[]
     ) {
+        const fromUserFile = matchFileSpecs(this._configOptions, sourceFilePath);
         const notFoundResult: ImportResult = {
             importName,
             isRelative: false,
@@ -286,7 +288,12 @@ export class ImportResolver {
             }
         } else {
             // Is it already cached?
-            const cachedResults = this._lookUpResultsInCache(execEnv, importName, moduleDescriptor.importedSymbols);
+            const cachedResults = this._lookUpResultsInCache(
+                execEnv,
+                importName,
+                moduleDescriptor.importedSymbols,
+                fromUserFile
+            );
 
             if (cachedResults) {
                 // In most cases, we can simply return a cached entry. However, there are cases
@@ -322,11 +329,23 @@ export class ImportResolver {
                         ) || notFoundResult;
                 }
 
-                return this.addResultsToCache(execEnv, importName, bestImport, moduleDescriptor.importedSymbols);
+                return this.addResultsToCache(
+                    execEnv,
+                    importName,
+                    bestImport,
+                    moduleDescriptor.importedSymbols,
+                    fromUserFile
+                );
             }
         }
 
-        return this.addResultsToCache(execEnv, importName, notFoundResult, /* importedSymbols */ undefined);
+        return this.addResultsToCache(
+            execEnv,
+            importName,
+            notFoundResult,
+            /* importedSymbols */ undefined,
+            fromUserFile
+        );
     }
 
     getCompletionSuggestions(
@@ -886,10 +905,11 @@ export class ImportResolver {
         execEnv: ExecutionEnvironment,
         importName: string,
         importResult: ImportResult,
-        importedSymbols: string[] | undefined
+        importedSymbols: string[] | undefined,
+        fromUserFile: boolean
     ) {
         getOrAdd(this._cachedImportResults, execEnv.root, () => new Map<string, ImportResult>()).set(
-            importName,
+            this._getCacheKey(importName, fromUserFile),
             importResult
         );
 
@@ -899,6 +919,7 @@ export class ImportResolver {
     // Follows import resolution algorithm defined in PEP-420:
     // https://www.python.org/dev/peps/pep-0420/
     protected resolveAbsoluteImport(
+        sourceFilePath: string | undefined,
         rootPath: string,
         execEnv: ExecutionEnvironment,
         moduleDescriptor: ImportedModuleDescriptor,
@@ -921,6 +942,7 @@ export class ImportResolver {
             // their stubs separately from their package implementation by appending the string
             // '-stubs' to its top - level directory name. We'll look there first.
             const importResult = this._resolveAbsoluteImport(
+                sourceFilePath,
                 rootPath,
                 execEnv,
                 moduleDescriptor,
@@ -944,6 +966,7 @@ export class ImportResolver {
         }
 
         return this._resolveAbsoluteImport(
+            sourceFilePath,
             rootPath,
             execEnv,
             moduleDescriptor,
@@ -976,6 +999,7 @@ export class ImportResolver {
     }
 
     private _resolveAbsoluteImport(
+        sourceFilePath: string | undefined,
         rootPath: string,
         execEnv: ExecutionEnvironment,
         moduleDescriptor: ImportedModuleDescriptor,
@@ -1293,17 +1317,22 @@ export class ImportResolver {
         return undefined;
     }
 
+    private _getCacheKey(importName: string, fromUserFile: boolean) {
+        return `${importName}-${fromUserFile}`;
+    }
+
     private _lookUpResultsInCache(
         execEnv: ExecutionEnvironment,
         importName: string,
-        importedSymbols: string[] | undefined
+        importedSymbols: string[] | undefined,
+        fromUserFile: boolean
     ) {
         const cacheForExecEnv = this._cachedImportResults.get(execEnv.root);
         if (!cacheForExecEnv) {
             return undefined;
         }
 
-        const cachedEntry = cacheForExecEnv.get(importName);
+        const cachedEntry = cacheForExecEnv.get(this._getCacheKey(importName, fromUserFile));
         if (!cachedEntry) {
             return undefined;
         }
@@ -1411,6 +1440,7 @@ export class ImportResolver {
         if (allowPyi && this._configOptions.stubPath) {
             importFailureInfo.push(`Looking in stubPath '${this._configOptions.stubPath}'`);
             const typingsImport = this.resolveAbsoluteImport(
+                sourceFilePath,
                 this._configOptions.stubPath,
                 execEnv,
                 moduleDescriptor,
@@ -1452,6 +1482,7 @@ export class ImportResolver {
             importFailureInfo.push(`Looking in root directory of execution environment ` + `'${execEnv.root}'`);
 
             localImport = this.resolveAbsoluteImport(
+                sourceFilePath,
                 execEnv.root,
                 execEnv,
                 moduleDescriptor,
@@ -1469,6 +1500,7 @@ export class ImportResolver {
         for (const extraPath of execEnv.extraPaths) {
             importFailureInfo.push(`Looking in extraPath '${extraPath}'`);
             localImport = this.resolveAbsoluteImport(
+                sourceFilePath,
                 extraPath,
                 execEnv,
                 moduleDescriptor,
@@ -1490,6 +1522,7 @@ export class ImportResolver {
                 importFailureInfo.push(`Looking in python search path '${searchPath}'`);
 
                 const thirdPartyImport = this.resolveAbsoluteImport(
+                    sourceFilePath,
                     searchPath,
                     execEnv,
                     moduleDescriptor,
@@ -1600,6 +1633,9 @@ export class ImportResolver {
             if (bestImportSoFar.importType === ImportType.Local && !bestImportSoFar.isNamespacePackage) {
                 return bestImportSoFar;
             }
+            if (newImport.importType === ImportType.Local && !newImport.isNamespacePackage) {
+                return newImport;
+            }
 
             // If both are namespace imports, select the one that resolves the symbols.
             if (
@@ -1703,6 +1739,7 @@ export class ImportResolver {
             for (const typeshedPath of typeshedPaths) {
                 if (this.dirExistsCached(typeshedPath)) {
                     const importInfo = this.resolveAbsoluteImport(
+                        undefined,
                         typeshedPath,
                         execEnv,
                         moduleDescriptor,
@@ -2071,6 +2108,7 @@ export class ImportResolver {
 
         // Now try to match the module parts from the current directory location.
         const absImport = this.resolveAbsoluteImport(
+            sourceFilePath,
             directory,
             execEnv,
             moduleDescriptor,
@@ -2085,6 +2123,7 @@ export class ImportResolver {
             // the same folder for the real module. Otherwise, it will
             // error out on runtime.
             absImport.nonStubImportResult = this.resolveAbsoluteImport(
+                sourceFilePath,
                 directory,
                 execEnv,
                 moduleDescriptor,

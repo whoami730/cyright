@@ -230,7 +230,7 @@ function assignClassToProtocolInternal(
                     diag?.addMessage(Localizer.DiagnosticAddendum.protocolMemberMissing().format({ name }));
                     typesAreConsistent = false;
                 } else {
-                    let destMemberType = evaluator.getDeclaredTypeOfSymbol(symbol);
+                    let destMemberType = evaluator.getDeclaredTypeOfSymbol(symbol)?.type;
                     if (destMemberType) {
                         // Partially specialize the type of the symbol based on the MRO class.
                         // We can skip this if it's the dest class because it is already
@@ -256,7 +256,7 @@ function assignClassToProtocolInternal(
                         if (isFunction(srcMemberType) || isOverloadedFunction(srcMemberType)) {
                             if (isMemberFromMetaclass) {
                                 const boundSrcFunction = evaluator.bindFunctionToClassOrObject(
-                                    srcType,
+                                    ClassType.cloneAsInstance(srcType),
                                     srcMemberType,
                                     /* memberClass */ undefined,
                                     /* errorNode */ undefined,
@@ -270,7 +270,7 @@ function assignClassToProtocolInternal(
 
                                 if (isFunction(destMemberType) || isOverloadedFunction(destMemberType)) {
                                     const boundDeclaredType = evaluator.bindFunctionToClassOrObject(
-                                        srcType,
+                                        ClassType.cloneAsInstance(srcType),
                                         destMemberType,
                                         /* memberClass */ undefined,
                                         /* errorNode */ undefined,
@@ -496,7 +496,7 @@ export function assignModuleToProtocol(
                     diag?.addMessage(Localizer.DiagnosticAddendum.protocolMemberMissing().format({ name }));
                     typesAreConsistent = false;
                 } else {
-                    let destMemberType = evaluator.getDeclaredTypeOfSymbol(symbol);
+                    let destMemberType = evaluator.getDeclaredTypeOfSymbol(symbol)?.type;
                     if (destMemberType) {
                         destMemberType = partiallySpecializeType(destMemberType, destType);
 

@@ -123,9 +123,17 @@ export interface TypeSameOptions {
 interface TypeAliasInfo {
     name: string;
     fullName: string;
-    typeParameters?: TypeVarType[] | undefined;
-    typeArguments?: Type[] | undefined;
     typeVarScopeId: TypeVarScopeId;
+
+    // Type parameters, if type alias is generic
+    typeParameters?: TypeVarType[] | undefined;
+
+    // Lazily-evaluated variance of type parameters based on how
+    // they are used in the type alias
+    usageVariance?: Variance[];
+
+    // Type argument, if type alias is specialized
+    typeArguments?: Type[] | undefined;
 }
 
 interface TypeBase {
@@ -148,6 +156,13 @@ interface TypeBase {
     // with a TypeFlags because we don't want an ambiguous and unambiguous
     // type to be seen as distinct when comparing types.
     isAmbiguous?: boolean;
+
+    // Cached values are not cloned.
+    cached?: {
+        // Type converted to instantiable and instance (cached)
+        instantiableType?: Type;
+        instanceType?: Type;
+    };
 
     // ! Cython
     cythonDetails?: CythonDetails;
@@ -180,12 +195,16 @@ export namespace TypeBase {
     }
 
     export function cloneType<T extends TypeBase>(type: T): T {
+        const clone = { ...type };
+
+        delete clone.cached;
+
         // ! Cython
-        const newType = { ...type };
         if (type.cythonDetails) {
-            newType.cythonDetails = { ...type.cythonDetails };
+            clone.cythonDetails = { ...type.cythonDetails };
         }
-        return newType;
+
+        return clone;
     }
 
     export function cloneTypeAsInstance<T extends TypeBase>(type: T): T {
@@ -353,6 +372,10 @@ export interface ModuleType extends TypeBase {
     category: TypeCategory.Module;
     fields: SymbolTable;
     docString?: string | undefined;
+
+    // If a field lookup isn't found, should the type of the
+    // resulting field be Any/Unknown or treated as an error?
+    notPresentFieldType?: AnyType | UnknownType;
 
     // A "loader" module includes symbols that were injected by
     // the module loader. We keep these separate so we don't
@@ -1597,6 +1620,17 @@ export namespace FunctionType {
         return newFunction;
     }
 
+    export function cloneWithDocString(type: FunctionType, docString?: string): FunctionType {
+        const newFunction = TypeBase.cloneType(type);
+
+        // Make a shallow clone of the details.
+        newFunction.details = { ...type.details };
+
+        newFunction.details.docString = docString;
+
+        return newFunction;
+    }
+
     export function cloneForParamSpecApplication(type: FunctionType, paramSpecValue: FunctionType): FunctionType {
         const newFunction = TypeBase.cloneType(type);
 
@@ -2215,7 +2249,6 @@ export interface TypeVarDetails {
     // Used for recursive type aliases.
     recursiveTypeAliasName?: string | undefined;
     recursiveTypeAliasScopeId?: TypeVarScopeId | undefined;
-    illegalRecursionDetected?: boolean | undefined;
 
     // Type parameters for a recursive type alias.
     recursiveTypeParameters?: TypeVarType[] | undefined;
