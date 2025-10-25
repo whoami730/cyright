@@ -99,3 +99,14 @@ func2("")
 func2(["", 0])
 func2([["", 0], ["", 0]])
 func2([[""]])
+
+
+def func3(value: _T) -> list[_T]:
+    to_add = [value, str(value)]
+    # This should generate an error.
+    return to_add
+
+
+def func4(value: _T) -> list[_T]:
+    # This should generate an error.
+    return [value, str(value)]

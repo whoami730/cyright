@@ -71,36 +71,36 @@ export const enum EvaluatorFlags {
     EvaluateStringLiteralAsType = 1 << 3,
 
     // 'Final' is not allowed in this context.
-    FinalDisallowed = 1 << 4,
+    DisallowFinal = 1 << 4,
 
     // A ParamSpec isn't allowed in this context.
-    ParamSpecDisallowed = 1 << 5,
+    DisallowParamSpec = 1 << 5,
+
+    // A TypeVarTuple isn't allowed in this context.
+    DisallowTypeVarTuple = 1 << 6,
 
     // Expression is expected to be a type (class) rather
     // than an instance (object)
-    ExpectingType = 1 << 6,
-
-    // A TypeVarTuple isn't allowed in this context.
-    TypeVarTupleDisallowed = 1 << 7,
-
-    // Interpret an ellipsis type annotation to mean "Unknown".
-    ConvertEllipsisToUnknown = 1 << 8,
-
-    // The Generic class type is allowed in this context. It is
-    // normally not allowed if ExpectingType is set.
-    AllowGenericClassType = 1 << 9,
+    ExpectingType = 1 << 7,
 
     // A type annotation restricts the types of expressions that are
     // allowed. If this flag is set, illegal type expressions are
     // flagged as errors.
-    ExpectingTypeAnnotation = 1 << 10,
+    ExpectingTypeAnnotation = 1 << 8,
+
+    // Interpret an ellipsis type annotation to mean "Unknown".
+    ConvertEllipsisToUnknown = 1 << 9,
+
+    // The Generic class type is allowed in this context. It is
+    // normally not allowed if ExpectingType is set.
+    AllowGenericClassType = 1 << 10,
 
     // TypeVars within this expression must not refer to type vars
-    // used in an outer scope that.
+    // used in an outer scope.
     DisallowTypeVarsWithScopeId = 1 << 11,
 
     // TypeVars within this expression must refer to type vars
-    // used in an outer scope that.
+    // used in an outer scope.
     DisallowTypeVarsWithoutScopeId = 1 << 12,
 
     // TypeVars within this expression that are otherwise not
@@ -121,7 +121,7 @@ export const enum EvaluatorFlags {
     DisallowRecursiveTypeAliasPlaceholder = 1 << 16,
 
     // 'ClassVar' is not allowed in this context.
-    ClassVarDisallowed = 1 << 17,
+    DisallowClassVar = 1 << 17,
 
     // 'Generic' cannot be used without type arguments in this context.
     DisallowNakedGeneric = 1 << 18,
@@ -131,7 +131,7 @@ export const enum EvaluatorFlags {
     NotParsedByInterpreter = 1 << 19,
 
     // Required and NotRequired are allowed in this context.
-    RequiredAllowed = 1 << 20,
+    AllowRequired = 1 << 20,
 
     // Allow Unpack annotation for a tuple or TypeVarTuple.
     AllowUnpackedTupleOrTypeVarTuple = 1 << 21,
@@ -182,6 +182,9 @@ export interface TypeResult {
     // Is the type wrapped in a "Required" or "NotRequired" class?
     isRequired?: boolean;
     isNotRequired?: boolean;
+
+    // If a call expression, which overloads were used to satisfy it?
+    overloadsUsedForCall?: FunctionType[];
 }
 
 export interface TypeResultWithNode extends TypeResult {
@@ -299,6 +302,11 @@ export interface FunctionResult {
     isTypeIncomplete: boolean;
 }
 
+export interface InferenceContext {
+    expectedType: Type;
+    typeVarContext?: TypeVarContext;
+}
+
 export interface CallResult {
     // Specialized return type of call
     returnType?: Type | undefined;
@@ -321,6 +329,11 @@ export interface CallResult {
     // is used for overloaded constructors where the arguments to the
     // constructor influence the specialized type of the constructed object.
     specializedInitSelfType?: Type | undefined;
+
+    // The overload or overloads used to satisfy the call. There can
+    // be multiple overloads in the case where the call type is a union
+    // or we have used union expansion for arguments.
+    overloadsUsedForCall: FunctionType[];
 }
 
 export interface PrintTypeOptions {
@@ -333,8 +346,9 @@ export interface TypeEvaluator {
     runWithCancellationToken<T>(token: CancellationToken, callback: () => T): T;
 
     getType: (node: ExpressionNode) => Type | undefined;
+    getTypeResult: (node: ExpressionNode) => TypeResult | undefined;
     getCachedType: (node: ExpressionNode) => Type | undefined;
-    getTypeOfExpression: (node: ExpressionNode, flags?: EvaluatorFlags, expectedType?: Type) => TypeResult;
+    getTypeOfExpression: (node: ExpressionNode, flags?: EvaluatorFlags, context?: InferenceContext) => TypeResult;
     getTypeOfAnnotation: (node: ExpressionNode, options?: AnnotationTypeOptions) => Type;
     getTypeOfClass: (node: ClassNode) => ClassTypeResult | undefined;
     getTypeOfFunction: (node: FunctionNode) => FunctionTypeResult | undefined;
@@ -360,7 +374,7 @@ export interface TypeEvaluator {
         type: OverloadedFunctionType,
         typeVarContext: TypeVarContext | undefined,
         skipUnknownArgCheck: boolean,
-        expectedType: Type | undefined
+        inferenceContext: InferenceContext | undefined
     ) => CallResult;
 
     isAfterNodeReachable: (node: ParseNode) => boolean;
@@ -432,7 +446,7 @@ export interface TypeEvaluator {
         args: TypeResult[],
         magicMethodName: string,
         errorNode: ExpressionNode,
-        expectedType: Type | undefined
+        inferenceContext: InferenceContext | undefined
     ) => Type | undefined;
     bindFunctionToClassOrObject: (
         baseType: ClassType | undefined,
@@ -462,7 +476,6 @@ export interface TypeEvaluator {
         diag: DiagnosticAddendum,
         enforceParamNames?: boolean
     ) => boolean;
-    validateInitSubclassArgs: (node: ClassNode, classType: ClassType, argList: FunctionArgument[]) => void;
     assignTypeToExpression: (
         target: ExpressionNode,
         type: Type,
@@ -497,7 +510,8 @@ export interface TypeEvaluator {
         diagLevel: DiagnosticLevel,
         rule: string,
         message: string,
-        node: ParseNode
+        node: ParseNode,
+        range?: TextRange
     ) => Diagnostic | undefined;
     addDiagnosticForTextRange: (
         fileInfo: AnalyzerFileInfo,
