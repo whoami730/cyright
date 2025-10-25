@@ -15,7 +15,6 @@ import { ConfigOptions, ExecutionEnvironment } from '../common/configOptions';
 import { ConsoleInterface } from '../common/console';
 import { Diagnostic } from '../common/diagnostic';
 import { FileDiagnostics } from '../common/diagnosticSink';
-import { LanguageServiceExtension } from '../common/extensibility';
 import { Range } from '../common/textRange';
 import { AnalysisCompleteCallback, analyzeProgram } from './analysis';
 import { CacheManager } from './cacheManager';
@@ -24,13 +23,13 @@ import { Indices, MaxAnalysisTime, OpenFileOptions, Program } from './program';
 
 export class BackgroundAnalysisProgram {
     private _program: Program;
+    private _disposed = false;
     private _onAnalysisCompletion: AnalysisCompleteCallback | undefined;
 
     constructor(
         private _console: ConsoleInterface,
         private _configOptions: ConfigOptions,
         private _importResolver: ImportResolver,
-        extension?: LanguageServiceExtension,
         protected _backgroundAnalysis?: BackgroundAnalysisBase,
         private _maxAnalysisTime?: MaxAnalysisTime,
         private _disableChecker?: boolean,
@@ -40,7 +39,6 @@ export class BackgroundAnalysisProgram {
             this._importResolver,
             this._configOptions,
             this._console,
-            extension,
             undefined,
             this._disableChecker,
             cacheManager
@@ -125,6 +123,11 @@ export class BackgroundAnalysisProgram {
         this._backgroundAnalysis?.setFileClosed(filePath, isTracked);
         const diagnostics = this._program.setFileClosed(filePath, isTracked);
         this._reportDiagnosticsForRemovedFiles(diagnostics);
+    }
+
+    addTrackedFile(filePath: string, isThirdPartyImport: boolean) {
+        this._backgroundAnalysis?.addTrackedFile(filePath, isThirdPartyImport);
+        this._program.addTrackedFile(filePath, isThirdPartyImport);
     }
 
     markAllFilesDirty(evenIfContentsAreSame: boolean, indexingNeeded = true) {
@@ -253,6 +256,7 @@ export class BackgroundAnalysisProgram {
     }
 
     dispose() {
+        this._disposed = true;
         this._program.dispose();
         this._backgroundAnalysis?.shutdown();
     }
@@ -291,7 +295,6 @@ export type BackgroundAnalysisProgramFactory = (
     console: ConsoleInterface,
     configOptions: ConfigOptions,
     importResolver: ImportResolver,
-    extension?: LanguageServiceExtension,
     backgroundAnalysis?: BackgroundAnalysisBase,
     maxAnalysisTime?: MaxAnalysisTime,
     cacheManager?: CacheManager

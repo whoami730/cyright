@@ -405,6 +405,12 @@ test('TypeNarrowingIsinstance11', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('TypeNarrowingIsinstance12', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeNarrowingIsinstance12.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('TypeNarrowingTupleLength1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeNarrowingTupleLength1.py']);
 
@@ -633,6 +639,18 @@ test('Lambda6', () => {
 
 test('Lambda7', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['lambda7.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Lambda8', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['lambda8.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Lambda9', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['lambda9.py']);
 
     TestUtils.validateResults(analysisResults, 0);
 });
@@ -914,6 +932,12 @@ test('CodeFlow7', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('CodeFlow8', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['codeFlow8.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('CapturedVariable1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['capturedVariable1.py']);
 
@@ -1060,6 +1084,12 @@ test('Operators9', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('Operators10', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['operators10.py']);
+
+    TestUtils.validateResults(analysisResults, 1);
+});
+
 test('Optional1', () => {
     const configOptions = new ConfigOptions('.');
 
@@ -1198,6 +1228,12 @@ test('Tuples16', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('Tuples17', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['tuples17.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('NamedTuples1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['namedTuples1.py']);
 
@@ -1302,6 +1338,18 @@ test('Self5', () => {
 
 test('Self6', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['self6.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Self7', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['self7.py']);
+
+    TestUtils.validateResults(analysisResults, 1);
+});
+
+test('Self8', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['self8.py']);
 
     TestUtils.validateResults(analysisResults, 0);
 });

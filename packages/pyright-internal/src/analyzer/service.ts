@@ -28,11 +28,11 @@ import {
 import { BackgroundAnalysisBase, IndexOptions, RefreshOptions } from '../backgroundAnalysisBase';
 import { CancellationProvider, DefaultCancellationProvider } from '../common/cancellationUtils';
 import { CommandLineOptions } from '../common/commandLineOptions';
-import { ConfigOptions } from '../common/configOptions';
+import { ConfigOptions, matchFileSpecs } from '../common/configOptions';
 import { ConsoleInterface, log, LogLevel, StandardConsole } from '../common/console';
 import { Diagnostic } from '../common/diagnostic';
 import { FileEditActions, TextEditAction } from '../common/editAction';
-import { LanguageServiceExtension } from '../common/extensibility';
+import { Extensions } from '../common/extensibility';
 import { FileSystem, FileWatcher, FileWatcherEventType, ignoredWatchEventFunction } from '../common/fileSystem';
 import { FullAccessHost } from '../common/fullAccessHost';
 import { Host, HostFactory, HostKind, NoAccessHost } from '../common/host';
@@ -87,14 +87,12 @@ export const pyprojectTomlName = 'pyproject.toml';
 const _userActivityBackoffTimeInMs = 250;
 
 const _gitDirectory = normalizeSlashes('/.git/');
-const _includeFileRegex = /\.pyi?$/;
 
 export interface AnalyzerServiceOptions {
     console?: ConsoleInterface;
     hostFactory?: HostFactory;
     importResolverFactory?: ImportResolverFactory;
     configOptions?: ConfigOptions;
-    extension?: LanguageServiceExtension;
     backgroundAnalysis?: BackgroundAnalysisBase;
     maxAnalysisTime?: MaxAnalysisTime;
     backgroundAnalysisProgramFactory?: BackgroundAnalysisProgramFactory;
@@ -163,7 +161,6 @@ export class AnalyzerService {
                       this._options.console,
                       this._options.configOptions,
                       importResolver,
-                      this._options.extension,
                       this._options.backgroundAnalysis,
                       this._options.maxAnalysisTime,
                       this._options.cacheManager
@@ -172,12 +169,15 @@ export class AnalyzerService {
                       this._options.console,
                       this._options.configOptions,
                       importResolver,
-                      this._options.extension,
                       this._options.backgroundAnalysis,
                       this._options.maxAnalysisTime,
                       /* disableChecker */ undefined,
                       this._options.cacheManager
                   );
+
+        // Create the extensions tied to this program. This is where the mutating 'addTrackedFile' will actually
+        // mutate the local program and the BG thread one.
+        Extensions.createProgramExtensions(this._program, { addTrackedFile: this.addTrackedFile.bind(this) });
     }
 
     clone(
@@ -221,6 +221,7 @@ export class AnalyzerService {
             // Make sure we dispose program, otherwise, entire program
             // will leak.
             this._backgroundAnalysisProgram.dispose();
+            Extensions.destroyProgramExtensions(this._program.id);
         }
 
         this._disposed = true;
@@ -291,14 +292,7 @@ export class AnalyzerService {
     }
 
     isTracked(filePath: string): boolean {
-        const fileInfo = this._program.getSourceFileInfo(filePath);
-        if (fileInfo) {
-            // If we already determined whether the file is tracked or not, don't do it again.
-            // This will make sure we have consistent look at the state once it is loaded to the memory.
-            return fileInfo.isTracked;
-        }
-
-        return this._matchFileSpecs(filePath);
+        return this._program.owns(filePath);
     }
 
     setFileOpened(
@@ -350,6 +344,10 @@ export class AnalyzerService {
     setFileClosed(path: string, isTracked?: boolean) {
         this._backgroundAnalysisProgram.setFileClosed(path, isTracked);
         this._scheduleReanalysis(/* requireTrackedFileUpdate */ false);
+    }
+
+    addTrackedFile(path: string, isThirdPartyImport: boolean) {
+        this._backgroundAnalysisProgram.addTrackedFile(path, isThirdPartyImport);
     }
 
     getParseResult(path: string) {
@@ -544,7 +542,7 @@ export class AnalyzerService {
         this._console.info('');
         this._console.info('Analysis stats');
 
-        const boundFileCount = this._program.getFileCount();
+        const boundFileCount = this._program.getFileCount(/* userFileOnly */ false);
         this._console.info('Total files parsed and bound: ' + boundFileCount.toString());
 
         const checkedFileCount = this._program.getUserFileCount();
@@ -805,6 +803,7 @@ export class AnalyzerService {
         configOptions.checkOnlyOpenFiles = !!commandLineOptions.checkOnlyOpenFiles;
         configOptions.autoImportCompletions = !!commandLineOptions.autoImportCompletions;
         configOptions.indexing = !!commandLineOptions.indexing;
+        configOptions.taskListTokens = commandLineOptions.taskListTokens;
         configOptions.logTypeEvaluationTime = !!commandLineOptions.logTypeEvaluationTime;
         configOptions.typeEvaluationTimeThreshold = commandLineOptions.typeEvaluationTimeThreshold;
 
@@ -1153,7 +1152,7 @@ export class AnalyzerService {
         this._backgroundAnalysisProgram.program
             .getOpened()
             .map((o) => o.sourceFile.getFilePath())
-            .filter((f) => this._matchFileSpecs(f))
+            .filter((f) => matchFileSpecs(this._program.getConfigOptions(), f))
             .forEach((f) => fileMap.set(f, f));
 
         return [...fileMap.values()];
@@ -1256,7 +1255,11 @@ export class AnalyzerService {
         const longOperationLimitInSec = 10;
         let loggedLongOperationError = false;
 
-        const visitDirectoryUnchecked = (absolutePath: string, includeRegExp: RegExp) => {
+        const visitDirectoryUnchecked = (
+            absolutePath: string,
+            includeRegExp: RegExp,
+            hasDirectoryWildcard: boolean
+        ) => {
             if (!loggedLongOperationError) {
                 const secondsSinceStart = (Date.now() - startTime) * 0.001;
 
@@ -1291,23 +1294,23 @@ export class AnalyzerService {
             for (const file of files) {
                 const filePath = combinePaths(absolutePath, file);
 
-                if (this._matchIncludeFileSpec(includeRegExp, exclude, filePath)) {
+                if (FileSpec.matchIncludeFileSpec(includeRegExp, exclude, filePath)) {
                     results.push(filePath);
                 }
             }
 
             for (const directory of directories) {
                 const dirPath = combinePaths(absolutePath, directory);
-                if (includeRegExp.test(dirPath)) {
-                    if (!this._isInExcludePath(dirPath, exclude)) {
-                        visitDirectory(dirPath, includeRegExp);
+                if (includeRegExp.test(dirPath) || hasDirectoryWildcard) {
+                    if (!FileSpec.isInPath(dirPath, exclude)) {
+                        visitDirectory(dirPath, includeRegExp, hasDirectoryWildcard);
                     }
                 }
             }
         };
 
         const seenDirs = new Set<string>();
-        const visitDirectory = (absolutePath: string, includeRegExp: RegExp) => {
+        const visitDirectory = (absolutePath: string, includeRegExp: RegExp, hasDirectoryWildcard: boolean) => {
             const realDirPath = tryRealpath(this.fs, absolutePath);
             if (!realDirPath) {
                 this._console.warn(`Skipping broken link "${absolutePath}"`);
@@ -1321,27 +1324,27 @@ export class AnalyzerService {
             seenDirs.add(realDirPath);
 
             try {
-                visitDirectoryUnchecked(absolutePath, includeRegExp);
+                visitDirectoryUnchecked(absolutePath, includeRegExp, hasDirectoryWildcard);
             } finally {
                 seenDirs.delete(realDirPath);
             }
         };
 
         include.forEach((includeSpec) => {
-            if (!this._isInExcludePath(includeSpec.wildcardRoot, exclude)) {
+            if (!FileSpec.isInPath(includeSpec.wildcardRoot, exclude)) {
                 let foundFileSpec = false;
                 let isFileIncluded = true;
 
                 const stat = tryStat(this.fs, includeSpec.wildcardRoot);
                 if (stat?.isFile()) {
-                    if (this._shouldIncludeFile(includeSpec.wildcardRoot)) {
+                    if (FileSpec.matchesIncludeFileRegex(includeSpec.wildcardRoot)) {
                         results.push(includeSpec.wildcardRoot);
                     } else {
                         isFileIncluded = false;
                     }
                     foundFileSpec = true;
                 } else if (stat?.isDirectory()) {
-                    visitDirectory(includeSpec.wildcardRoot, includeSpec.regExp);
+                    visitDirectory(includeSpec.wildcardRoot, includeSpec.regExp, includeSpec.hasDirectoryWildcard);
                     foundFileSpec = true;
                 }
 
@@ -1498,7 +1501,7 @@ export class AnalyzerService {
         }
 
         // The fs change is on a folder.
-        if (!this._matchFileSpecs(path, /* isFile */ false)) {
+        if (!matchFileSpecs(this._program.getConfigOptions(), path, /* isFile */ false)) {
             // First, make sure the folder is included. By default, we exclude any folder whose name starts with '.'
             return false;
         }
@@ -1812,34 +1815,6 @@ export class AnalyzerService {
                 elapsedTime: 0,
             });
         }
-    }
-
-    private _shouldIncludeFile(filePath: string, isFile = true) {
-        return isFile ? _includeFileRegex.test(filePath) : true;
-    }
-
-    private _isInExcludePath(path: string, excludePaths: FileSpec[]) {
-        return !!excludePaths.find((excl) => excl.regExp.test(path));
-    }
-
-    private _matchIncludeFileSpec(includeRegExp: RegExp, exclude: FileSpec[], filePath: string, isFile = true) {
-        if (includeRegExp.test(filePath)) {
-            if (!this._isInExcludePath(filePath, exclude) && this._shouldIncludeFile(filePath, isFile)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private _matchFileSpecs(filePath: string, isFile = true) {
-        for (const includeSpec of this._configOptions.include) {
-            if (this._matchIncludeFileSpec(includeSpec.regExp, this._configOptions.exclude, filePath, isFile)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     // ! Cython

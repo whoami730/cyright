@@ -307,27 +307,6 @@ export function getTypeNarrowingCallback(
                     }
                 }
 
-                // Look for <literal> == X or <literal> != X
-                if (ParseTreeUtils.isMatchingExpression(reference, testExpression.rightExpression)) {
-                    const leftTypeResult = evaluator.getTypeOfExpression(testExpression.leftExpression);
-                    const leftType = leftTypeResult.type;
-
-                    if (isClassInstance(leftType) && leftType.literalValue !== undefined) {
-                        return (type: Type) => {
-                            return {
-                                type: narrowTypeForLiteralComparison(
-                                    evaluator,
-                                    type,
-                                    leftType,
-                                    adjIsPositiveTest,
-                                    /* isIsOperator */ false
-                                ),
-                                isIncomplete: !!leftTypeResult.isIncomplete,
-                            };
-                        };
-                    }
-                }
-
                 // Look for X[<literal>] == <literal> or X[<literal>] != <literal>
                 if (
                     testExpression.leftExpression.nodeType === ParseNodeType.Index &&
@@ -1592,8 +1571,8 @@ function narrowTypeForIsInstance(
         return combineTypes(anyOrUnknownSubstitutions);
     }
 
-    if (anyOrUnknown.length > 0) {
-        return combineTypes([filteredType, ...anyOrUnknown]);
+    if (isNever(filteredType) && anyOrUnknown.length > 0) {
+        return combineTypes(anyOrUnknown);
     }
 
     return filteredType;

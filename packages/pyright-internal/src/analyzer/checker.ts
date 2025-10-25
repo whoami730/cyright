@@ -11,6 +11,7 @@
  * and checked. It also performs some additional checks that
  * cannot (or should not be) performed lazily.
  */
+import { CancellationToken } from 'vscode-languageserver';
 
 import { Commands } from '../commands/commands';
 import { DiagnosticLevel } from '../common/configOptions';
@@ -252,7 +253,8 @@ export class Checker extends ParseTreeWalker {
         private _importResolver: ImportResolver,
         private _evaluator: TypeEvaluator,
         private _parseResults: ParseResults,
-        private _sourceMapper: SourceMapper
+        private _sourceMapper: SourceMapper,
+        private _dependentFiles?: ParseResults[]
     ) {
         super();
 
@@ -1249,6 +1251,11 @@ export class Checker extends ParseTreeWalker {
             if (!ParseTreeUtils.isWithinAssertExpression(node)) {
                 this._validateComparisonTypes(node);
             }
+        } else if (node.operator === OperatorType.Is || node.operator === OperatorType.IsNot) {
+            // Don't apply this rule if it's within an assert.
+            if (!ParseTreeUtils.isWithinAssertExpression(node)) {
+                this._validateComparisonTypesForIsOperator(node);
+            }
         } else if (node.operator === OperatorType.In || node.operator === OperatorType.NotIn) {
             // Don't apply this rule if it's within an assert.
             if (!ParseTreeUtils.isWithinAssertExpression(node)) {
@@ -1566,7 +1573,7 @@ export class Checker extends ParseTreeWalker {
     }
 
     private _getImportResult(node: ImportFromAsNode, filePath: string) {
-        const execEnv = this._importResolver.getConfigOption().findExecEnvironment(filePath);
+        const execEnv = this._importResolver.getConfigOptions().findExecEnvironment(filePath);
         const moduleNameNode = (node.parent as ImportFromNode).module;
 
         // Handle both absolute and relative imports.
@@ -1817,6 +1824,48 @@ export class Checker extends ParseTreeWalker {
         }
     }
 
+    // Determines whether the types of the two operands for an "is" or "is not"
+    // operation have overlapping types.
+    private _validateComparisonTypesForIsOperator(node: BinaryOperationNode) {
+        const rightType = this._evaluator.getType(node.rightExpression);
+
+        if (!rightType || !isNoneInstance(rightType)) {
+            return;
+        }
+
+        const leftType = this._evaluator.getType(node.leftExpression);
+        if (!leftType) {
+            return;
+        }
+
+        let foundMatchForNone = false;
+        doForEachSubtype(leftType, (subtype) => {
+            subtype = this._evaluator.makeTopLevelTypeVarsConcrete(subtype);
+
+            if (this._evaluator.assignType(subtype, NoneType.createInstance())) {
+                foundMatchForNone = true;
+            }
+        });
+
+        const getMessage = () => {
+            return node.operator === OperatorType.Is
+                ? Localizer.Diagnostic.comparisonAlwaysFalse()
+                : Localizer.Diagnostic.comparisonAlwaysTrue();
+        };
+
+        if (!foundMatchForNone) {
+            this._evaluator.addDiagnostic(
+                this._fileInfo.diagnosticRuleSet.reportUnnecessaryComparison,
+                DiagnosticRule.reportUnnecessaryComparison,
+                getMessage().format({
+                    leftType: this._evaluator.printType(leftType, { expandTypeAlias: true }),
+                    rightType: this._evaluator.printType(rightType),
+                }),
+                node
+            );
+        }
+    }
+
     // Determines whether the types of the two operands for an == or != operation
     // have overlapping types.
     private _validateComparisonTypes(node: BinaryOperationNode) {
@@ -2056,7 +2105,7 @@ export class Checker extends ParseTreeWalker {
         const nameWalker = new ParseTreeUtils.NameNodeWalker((nameNode, subscriptIndex, baseExpression) => {
             const nameType = this._evaluator.getType(nameNode);
             ``;
-            if (nameType && isTypeVar(nameType)) {
+            if (nameType && isTypeVar(nameType) && !nameType.details.isSynthesizedSelf) {
                 // Does this name refer to a TypeVar that is scoped to this function?
                 if (nameType.scopeId === this._evaluator.getScopeIdForNode(node)) {
                     // We exempt constrained TypeVars, bound TypeVars that are type arguments of
@@ -2064,6 +2113,7 @@ export class Checker extends ParseTreeWalker {
                     // instances in these particular cases.
                     let isExempt =
                         nameType.details.constraints.length > 0 ||
+                        !!nameType.details.defaultType ||
                         (exemptBoundTypeVar &&
                             nameType.details.boundType !== undefined &&
                             subscriptIndex !== undefined) ||
@@ -2118,6 +2168,7 @@ export class Checker extends ParseTreeWalker {
                     const existingEntry = classTypeVarUsage.get(nameType.details.name);
                     const isParamTypeWithEllipsisUsage =
                         curParamNode?.defaultValue?.nodeType === ParseNodeType.Ellipsis;
+                    const isExempt = !!nameType.details.defaultType;
 
                     if (!existingEntry) {
                         classTypeVarUsage.set(nameType.details.name, {
@@ -2126,7 +2177,7 @@ export class Checker extends ParseTreeWalker {
                             paramTypeWithEllipsisUsageCount: isParamTypeWithEllipsisUsage ? 1 : 0,
                             returnTypeUsageCount: 0,
                             paramWithEllipsis: isParamTypeWithEllipsisUsage ? curParamNode?.name?.value : undefined,
-                            isExempt: false,
+                            isExempt,
                         });
                     } else {
                         existingEntry.nodes.push(nameNode);
@@ -2227,7 +2278,8 @@ export class Checker extends ParseTreeWalker {
         classTypeVarUsage.forEach((usage) => {
             if (
                 usage.paramTypeWithEllipsisUsageCount > 0 &&
-                usage.paramTypeUsageCount === usage.paramTypeWithEllipsisUsageCount
+                usage.paramTypeUsageCount === usage.paramTypeWithEllipsisUsageCount &&
+                !usage.isExempt
             ) {
                 const diag = new DiagnosticAddendum();
                 diag.addMessage(Localizer.DiagnosticAddendum.typeVarUnsolvableRemedy());
@@ -2617,12 +2669,13 @@ export class Checker extends ParseTreeWalker {
     }
 
     private _validateSymbolTables() {
+        const dependentFileInfo = this._dependentFiles?.map((p) => AnalyzerNodeInfo.getFileInfo(p.parseTree));
         for (const scopedNode of this._scopedNodes) {
             const scope = AnalyzerNodeInfo.getScope(scopedNode);
 
             if (scope) {
                 scope.symbolTable.forEach((symbol, name) => {
-                    this._conditionallyReportUnusedSymbol(name, symbol, scope.type);
+                    this._conditionallyReportUnusedSymbol(name, symbol, scope.type, dependentFileInfo);
 
                     this._reportIncompatibleDeclarations(name, symbol);
 
@@ -3063,14 +3116,20 @@ export class Checker extends ParseTreeWalker {
         }
     }
 
-    private _conditionallyReportUnusedSymbol(name: string, symbol: Symbol, scopeType: ScopeType) {
+    private _conditionallyReportUnusedSymbol(
+        name: string,
+        symbol: Symbol,
+        scopeType: ScopeType,
+        dependentFileInfo?: AnalyzerFileInfo[]
+    ) {
         const accessedSymbolSet = this._fileInfo.accessedSymbolSet;
+        if (symbol.isIgnoredForProtocolMatch() || accessedSymbolSet.has(symbol.id)) {
+            return;
+        }
 
-        if (
-            symbol.isIgnoredForProtocolMatch() ||
-            accessedSymbolSet.has(symbol.id) ||
-            this._fileInfo.ipythonMode === IPythonMode.CellDocs
-        ) {
+        // If this file is implicitly imported by other files, we need to make sure the symbol defined in
+        // the current file is not accessed from those other files.
+        if (dependentFileInfo && dependentFileInfo.some((i) => i.accessedSymbolSet.has(symbol.id))) {
             return;
         }
 
@@ -3616,29 +3675,26 @@ export class Checker extends ParseTreeWalker {
                 // we can determine which overload(s) were used to satisfy
                 // the call expression and determine whether any of them
                 // are deprecated.
-                let callTypeResult: TypeResult | undefined;
-                if (node.parent?.nodeType === ParseNodeType.Call && node.parent.leftExpression === node) {
-                    callTypeResult = this._evaluator.getTypeResult(node.parent);
-                } else if (
-                    node.parent?.nodeType === ParseNodeType.MemberAccess &&
-                    node.parent.memberName === node &&
-                    node.parent.parent?.nodeType === ParseNodeType.Call &&
-                    node.parent.parent.leftExpression === node.parent
-                ) {
-                    callTypeResult = this._evaluator.getTypeResult(node.parent.parent);
-                }
+                const callNode = ParseTreeUtils.getCallForName(node);
 
-                if (
-                    callTypeResult &&
-                    callTypeResult.overloadsUsedForCall &&
-                    callTypeResult.overloadsUsedForCall.length > 0
-                ) {
-                    callTypeResult.overloadsUsedForCall.forEach((overload) => {
-                        if (overload.details.deprecatedMessage !== undefined && node.value === overload.details.name) {
-                            deprecatedMessage = overload.details.deprecatedMessage;
-                            errorMessage = Localizer.Diagnostic.deprecatedFunction();
-                        }
-                    });
+                if (callNode) {
+                    const callTypeResult = this._evaluator.getTypeResult(callNode);
+
+                    if (
+                        callTypeResult &&
+                        callTypeResult.overloadsUsedForCall &&
+                        callTypeResult.overloadsUsedForCall.length > 0
+                    ) {
+                        callTypeResult.overloadsUsedForCall.forEach((overload) => {
+                            if (
+                                overload.details.deprecatedMessage !== undefined &&
+                                node.value === overload.details.name
+                            ) {
+                                deprecatedMessage = overload.details.deprecatedMessage;
+                                errorMessage = Localizer.Diagnostic.deprecatedFunction();
+                            }
+                        });
+                    }
                 }
             }
         });
@@ -3802,7 +3858,8 @@ export class Checker extends ParseTreeWalker {
                 this._sourceMapper,
                 namePartNodes[namePartNodes.length - 1],
                 DefinitionFilter.All,
-                this._evaluator
+                this._evaluator,
+                CancellationToken.None
             );
             const paths = definitions ? definitions.map((d) => d.path) : [];
             paths.forEach((p) => {
@@ -5878,15 +5935,18 @@ export class Checker extends ParseTreeWalker {
 
         const typeVarContext = new TypeVarContext(getTypeVarScopeId(functionType));
         if (!this._evaluator.assignType(paramType, expectedType, /* diag */ undefined, typeVarContext)) {
-            this._evaluator.addDiagnostic(
-                this._fileInfo.diagnosticRuleSet.reportGeneralTypeIssues,
-                DiagnosticRule.reportGeneralTypeIssues,
-                Localizer.Diagnostic.clsSelfParamTypeMismatch().format({
-                    name: paramInfo.name,
-                    classType: this._evaluator.printType(expectedType),
-                }),
-                paramInfo.typeAnnotation
-            );
+            // We exempt Never from this check because it has a legitimate use in this case.
+            if (!isNever(paramType)) {
+                this._evaluator.addDiagnostic(
+                    this._fileInfo.diagnosticRuleSet.reportGeneralTypeIssues,
+                    DiagnosticRule.reportGeneralTypeIssues,
+                    Localizer.Diagnostic.clsSelfParamTypeMismatch().format({
+                        name: paramInfo.name,
+                        classType: this._evaluator.printType(expectedType),
+                    }),
+                    paramInfo.typeAnnotation
+                );
+            }
         }
     }
 

@@ -22,7 +22,6 @@ import { CommandController } from '../../../commands/commandController';
 import { ConfigOptions } from '../../../common/configOptions';
 import { ConsoleInterface } from '../../../common/console';
 import * as debug from '../../../common/debug';
-import { LanguageServiceExtension } from '../../../common/extensibility';
 import { FileSystem } from '../../../common/fileSystem';
 import { Range } from '../../../common/textRange';
 import { UriParser } from '../../../common/uriParser';
@@ -46,7 +45,6 @@ export class TestFeatures implements HostSpecificFeatures {
         console: ConsoleInterface,
         configOptions: ConfigOptions,
         importResolver: ImportResolver,
-        extension?: LanguageServiceExtension,
         backgroundAnalysis?: BackgroundAnalysisBase,
         maxAnalysisTime?: MaxAnalysisTime,
         cacheManager?: CacheManager
@@ -55,7 +53,6 @@ export class TestFeatures implements HostSpecificFeatures {
             console,
             configOptions,
             importResolver,
-            extension,
             backgroundAnalysis,
             maxAnalysisTime,
             /* disableChecker */ undefined,
@@ -128,6 +125,7 @@ export class TestLanguageService implements LanguageServerInterface {
             useLibraryCodeForTypes: this._workspace.serviceInstance.getConfigOptions().useLibraryCodeForTypes,
             disableLanguageServices: this._workspace.disableLanguageServices,
             autoImportCompletions: this._workspace.serviceInstance.getConfigOptions().autoImportCompletions,
+            functionSignatureDisplay: this._workspace.serviceInstance.getConfigOptions().functionSignatureDisplay,
         };
 
         return Promise.resolve(settings);

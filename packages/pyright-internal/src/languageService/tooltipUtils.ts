@@ -24,6 +24,7 @@ import {
 import { TypeEvaluator } from '../analyzer/typeEvaluatorTypes';
 import {
     ClassType,
+    combineTypes,
     FunctionType,
     isFunction,
     isInstantiableClass,
@@ -31,25 +32,63 @@ import {
     isOverloadedFunction,
     OverloadedFunctionType,
     Type,
+    TypeCategory,
+    UnknownType,
 } from '../analyzer/types';
+import { SignatureDisplayType } from '../common/configOptions';
 import { isDefined } from '../common/core';
-import { ParseNodeType } from '../parser/parseNodes';
+import { ExpressionNode, ParseNodeType } from '../parser/parseNodes';
+
+// The number of spaces to indent each parameter, after moving to a newline in tooltips.
+const functionParamIndentOffset = 4;
+
+export function getToolTipForType(
+    type: Type,
+    label: string,
+    name: string,
+    evaluator: TypeEvaluator,
+    isProperty: boolean,
+    functionSignatureDisplay: SignatureDisplayType
+): string {
+    let signatureString = '';
+    if (isOverloadedFunction(type)) {
+        signatureString = label.length > 0 ? `(${label})\n` : '';
+        signatureString += `${getOverloadedFunctionTooltip(type, evaluator, functionSignatureDisplay)}`;
+    } else if (isFunction(type)) {
+        signatureString = `${getFunctionTooltip(label, name, type, evaluator, isProperty, functionSignatureDisplay)}`;
+    } else {
+        signatureString = label.length > 0 ? `(${label}) ` : '';
+        signatureString += `${name}: ${evaluator.printType(type)}`;
+    }
+
+    return signatureString;
+}
 
 // 70 is vscode's default hover width size.
 export function getOverloadedFunctionTooltip(
     type: OverloadedFunctionType,
     evaluator: TypeEvaluator,
+    functionSignatureDisplay: SignatureDisplayType,
     columnThreshold = 70
 ) {
     let content = '';
-    const overloads = OverloadedFunctionType.getOverloads(type).map((o) => o.details.name + evaluator.printType(o));
+    const overloads = OverloadedFunctionType.getOverloads(type).map((o) =>
+        getFunctionTooltip(
+            /* label */ '',
+            o.details.name,
+            o,
+            evaluator,
+            /* isProperty */ false,
+            functionSignatureDisplay
+        )
+    );
 
     for (let i = 0; i < overloads.length; i++) {
         if (i !== 0 && overloads[i].length > columnThreshold && overloads[i - 1].length <= columnThreshold) {
             content += '\n';
         }
 
-        content += overloads[i];
+        content += overloads[i] + `: ...`;
 
         if (i < overloads.length - 1) {
             content += '\n';
@@ -60,6 +99,64 @@ export function getOverloadedFunctionTooltip(
     }
 
     return content;
+}
+
+export function getFunctionTooltip(
+    label: string,
+    functionName: string,
+    type: FunctionType,
+    evaluator: TypeEvaluator,
+    isProperty = false,
+    functionSignatureDisplay: SignatureDisplayType
+) {
+    const labelFormatted = label.length === 0 ? '' : `(${label}) `;
+    const indentStr =
+        functionSignatureDisplay === SignatureDisplayType.formatted ? '\n' + ' '.repeat(functionParamIndentOffset) : '';
+    const funcParts = evaluator.printFunctionParts(type);
+    const paramSignature = formatSignature(funcParts, indentStr, functionSignatureDisplay);
+    const sep = isProperty ? ': ' : '';
+    return `${labelFormatted}def ${functionName}${sep}${paramSignature} -> ${funcParts[1]}`;
+}
+
+export function getConstructorTooltip(
+    constructorName: string,
+    type: Type,
+    evaluator: TypeEvaluator,
+    functionSignatureDisplay: SignatureDisplayType
+) {
+    const classText = `class `;
+    let signature = '';
+
+    if (isOverloadedFunction(type)) {
+        const overloads = type.overloads.map((overload) =>
+            getConstructorTooltip(constructorName, overload, evaluator, functionSignatureDisplay)
+        );
+        overloads.forEach((overload, index) => {
+            signature += overload + ': ...' + '\n\n';
+        });
+    } else if (isFunction(type)) {
+        const indentStr =
+            functionSignatureDisplay === SignatureDisplayType.formatted
+                ? '\n' + ' '.repeat(functionParamIndentOffset)
+                : ' ';
+        const funcParts = evaluator.printFunctionParts(type);
+        const paramSignature = formatSignature(funcParts, indentStr, functionSignatureDisplay);
+        signature += `${classText}${constructorName}${paramSignature}`;
+    }
+    return signature;
+}
+
+// Only formats signature if there is more than one parameter
+function formatSignature(
+    funcParts: [string[], string],
+    indentStr: string,
+    functionSignatureDisplay: SignatureDisplayType
+) {
+    return functionSignatureDisplay === SignatureDisplayType.formatted &&
+        funcParts.length > 0 &&
+        funcParts[0].length > 1
+        ? `(${indentStr}${funcParts[0].join(',' + indentStr)}\n)`
+        : `(${funcParts[0].join(', ')})`;
 }
 
 export function getFunctionDocStringFromType(type: FunctionType, sourceMapper: SourceMapper, evaluator: TypeEvaluator) {
@@ -206,7 +303,7 @@ export function getDocumentationPartsForTypeAndDecl(
             : undefined);
 
     // Combine with a new line if they both exist
-    return aliasDoc && typeDoc ? `${aliasDoc}\n\n${typeDoc}` : aliasDoc || typeDoc;
+    return aliasDoc && typeDoc && aliasDoc !== typeDoc ? `${aliasDoc}\n\n${typeDoc}` : aliasDoc || typeDoc;
 }
 
 export function getAutoImportText(name: string, from?: string, alias?: string): string {
@@ -222,4 +319,27 @@ export function getAutoImportText(name: string, from?: string, alias?: string): 
     }
 
     return text;
+}
+
+export function combineExpressionTypes(typeNodes: ExpressionNode[], evaluator: TypeEvaluator): Type {
+    const typeList = typeNodes.map((n) => evaluator.getType(n) || UnknownType.create());
+    let result = combineTypes(typeList);
+
+    // We're expecting a set of types, if there is only one and the outermost type is a list, take its inner type. This
+    // is probably an expression that at runtime would turn into a list.
+    if (
+        typeList.length === 1 &&
+        result.category === TypeCategory.Class &&
+        ClassType.isBuiltIn(result, 'list') &&
+        result.typeArguments
+    ) {
+        result = result.typeArguments[0];
+    } else if (
+        typeList.length === 1 &&
+        result.category === TypeCategory.Class &&
+        ClassType.isBuiltIn(result, 'range')
+    ) {
+        result = evaluator.getBuiltInObject(typeNodes[0], 'int');
+    }
+    return result;
 }

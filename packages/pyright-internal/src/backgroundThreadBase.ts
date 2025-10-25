@@ -62,7 +62,11 @@ export class BackgroundThreadBase {
 export function createConfigOptionsFrom(jsonObject: any): ConfigOptions {
     const configOptions = new ConfigOptions(jsonObject.projectRoot);
     const getFileSpec = (fileSpec: any): FileSpec => {
-        return { wildcardRoot: fileSpec.wildcardRoot, regExp: new RegExp(fileSpec.regExp.source) };
+        return {
+            wildcardRoot: fileSpec.wildcardRoot,
+            regExp: new RegExp(fileSpec.regExp.source),
+            hasDirectoryWildcard: fileSpec.hasDirectoryWildcard,
+        };
     };
 
     configOptions.pythonPath = jsonObject.pythonPath;
@@ -84,12 +88,14 @@ export function createConfigOptionsFrom(jsonObject: any): ConfigOptions {
     configOptions.executionEnvironments = jsonObject.executionEnvironments;
     configOptions.autoImportCompletions = jsonObject.autoImportCompletions;
     configOptions.indexing = jsonObject.indexing;
+    configOptions.taskListTokens = jsonObject.taskListTokens;
     configOptions.logTypeEvaluationTime = jsonObject.logTypeEvaluationTime;
     configOptions.typeEvaluationTimeThreshold = jsonObject.typeEvaluationTimeThreshold;
     configOptions.include = jsonObject.include.map((f: any) => getFileSpec(f));
     configOptions.exclude = jsonObject.exclude.map((f: any) => getFileSpec(f));
     configOptions.ignore = jsonObject.ignore.map((f: any) => getFileSpec(f));
     configOptions.strict = jsonObject.strict.map((f: any) => getFileSpec(f));
+    configOptions.functionSignatureDisplay = jsonObject.functionSignatureDisplay;
 
     return configOptions;
 }

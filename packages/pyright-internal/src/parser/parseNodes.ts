@@ -803,7 +803,6 @@ export function isExpressionNode(node: ParseNode): node is ExpressionNode {
         case ParseNodeType.FormatString:
         case ParseNodeType.StringList:
         case ParseNodeType.Dictionary:
-        case ParseNodeType.DictionaryExpandEntry:
         case ParseNodeType.List:
         case ParseNodeType.Set:
             // // ! Cython

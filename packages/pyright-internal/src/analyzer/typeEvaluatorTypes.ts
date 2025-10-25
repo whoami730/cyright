@@ -36,6 +36,7 @@ import { CodeFlowReferenceExpressionNode, FlowNode } from './codeFlowTypes';
 import { Declaration } from './declaration';
 import { SymbolWithScope } from './scope';
 import { Symbol } from './symbol';
+import { PrintTypeFlags } from './typePrinter';
 import {
     ClassType,
     FunctionParameter,
@@ -46,7 +47,7 @@ import {
     TypeVarType,
     UnknownType,
 } from './types';
-import { AssignTypeFlags, ClassMember } from './typeUtils';
+import { AssignTypeFlags, ClassMember, InferenceContext } from './typeUtils';
 import { TypeVarContext } from './typeVarContext';
 
 // Maximum number of unioned subtypes for an inferred type (e.g.
@@ -145,8 +146,8 @@ export const enum EvaluatorFlags {
     AllowUnpackedTypedDict = 1 << 23,
 }
 
-export interface TypeResult {
-    type: Type;
+export interface TypeResult<T extends Type = Type> {
+    type: T;
 
     // Is the type incomplete (i.e. not fully evaluated) because
     // some of the paths involve cyclical dependencies?
@@ -302,9 +303,12 @@ export interface FunctionResult {
     isTypeIncomplete: boolean;
 }
 
-export interface InferenceContext {
-    expectedType: Type;
-    typeVarContext?: TypeVarContext;
+export interface ArgResult {
+    isCompatible: boolean;
+    argType: Type;
+    isTypeIncomplete?: boolean | undefined;
+    condition?: TypeCondition[];
+    skippedOverloadArg?: boolean;
 }
 
 export interface CallResult {
@@ -334,6 +338,9 @@ export interface CallResult {
     // be multiple overloads in the case where the call type is a union
     // or we have used union expansion for arguments.
     overloadsUsedForCall: FunctionType[];
+
+    // Types of individual arguments.
+    argResults?: ArgResult[];
 }
 
 export interface PrintTypeOptions {
@@ -371,7 +378,7 @@ export interface TypeEvaluator {
     validateOverloadedFunctionArguments: (
         errorNode: ExpressionNode,
         argList: FunctionArgument[],
-        type: OverloadedFunctionType,
+        typeResult: TypeResult<OverloadedFunctionType>,
         typeVarContext: TypeVarContext | undefined,
         skipUnknownArgCheck: boolean,
         inferenceContext: InferenceContext | undefined
@@ -429,7 +436,7 @@ export interface TypeEvaluator {
     getFunctionInferredReturnType: (type: FunctionType, args?: ValidateArgTypeParams[]) => Type;
     getBestOverloadForArguments: (
         errorNode: ExpressionNode,
-        type: OverloadedFunctionType,
+        typeResult: TypeResult<OverloadedFunctionType>,
         argList: FunctionArgument[]
     ) => FunctionType | undefined;
     getBuiltInType: (node: ParseNode, name: string) => Type;
@@ -522,7 +529,7 @@ export interface TypeEvaluator {
     ) => Diagnostic | undefined;
 
     printType: (type: Type, options?: PrintTypeOptions) => string;
-    printFunctionParts: (type: FunctionType) => [string[], string];
+    printFunctionParts: (type: FunctionType, extraFlags?: PrintTypeFlags) => [string[], string];
 
     getTypeCacheEntryCount: () => number;
     disposeEvaluator: () => void;
