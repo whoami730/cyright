@@ -1,6 +1,6 @@
-# This sample tests type narrowing for falsy and truthy values.
+# This sample tests type narrowing for falsey and truthy values.
 
-from typing import Iterable, List, Literal, NamedTuple, Optional, Union
+from typing import AnyStr, Iterable, List, Literal, NamedTuple, Optional, Union
 
 
 class A:
@@ -81,11 +81,35 @@ def func8(foo: NT1) -> None:
     else:
         reveal_type(foo, expected_text="Never")
 
+
 class NT2(NT1):
     pass
+
 
 def func9(foo: NT2) -> None:
     if foo:
         reveal_type(foo, expected_text="NT2")
     else:
         reveal_type(foo, expected_text="Never")
+
+
+class E:
+    def __init__(self, value: int = 0) -> None:
+        self.value = value
+
+    def __bool__(self) -> bool:
+        return self.value >= 0
+
+    def method(self) -> None:
+        while not self:
+            reveal_type(self, expected_text="Self@E")
+            self.value += 1
+
+
+def func10(val: Optional[AnyStr]):
+    return 1
+
+
+def func11(val: Optional[AnyStr]):
+    assert val
+    reveal_type(val, expected_text="AnyStr@func11")

@@ -168,13 +168,15 @@ In addition to assignment-based type narrowing, Pyright supports the following t
 
 * `x is None` and `x is not None`
 * `x == None` and `x != None`
+* `x is ...` and `x is not ...`
+* `x == ...` and `x != ...`
 * `type(x) is T` and `type(x) is not T`
 * `x is E` and `x is not E` (where E is a literal enum or bool)
 * `x == L` and `x != L` (where L is an expression that evaluates to a literal type)
 * `x.y is None` and `x.y is not None` (where x is a type that is distinguished by a field with a None)
 * `x.y is E` and `x.y is not E` (where E is a literal enum or bool and x is a type that is distinguished by a field with a literal type)
 * `x.y == L` and `x.y != L` (where L is a literal expression and x is a type that is distinguished by a field or property with a literal type)
-* `x[K] == V` and `x[K] != V` (where K and V are literal expressions and x is a type that is distinguished by a TypedDict field with a literal type)
+* `x[K] == V`, `x[K] != V`, `x[K] is V`, and `x[K] is not V` (where K and V are literal expressions and x is a type that is distinguished by a TypedDict field with a literal type)
 * `x[I] == V` and `x[I] != V` (where I and V are literal expressions and x is a known-length tuple that is distinguished by the index indicated by I)
 * `x[I] is None` and `x[I] is not None` (where I is a literal expression and x is a known-length tuple that is distinguished by the index indicated by I)
 * `len(x) == L` and `len(x) != L` (where x is tuple and L is a literal integer)
@@ -184,8 +186,8 @@ In addition to assignment-based type narrowing, Pyright supports the following t
 * `issubclass(x, T)` (where T is a type or a tuple of types)
 * `callable(x)`
 * `f(x)` (where f is a user-defined type guard as defined in [PEP 647](https://www.python.org/dev/peps/pep-0647/))
-* `bool(x)` (where x is any expression that is statically verifiable to be truthy or falsy in all cases)
-* `x` (where x is any expression that is statically verifiable to be truthy or falsy in all cases)
+* `bool(x)` (where x is any expression that is statically verifiable to be truthy or falsey in all cases)
+* `x` (where x is any expression that is statically verifiable to be truthy or falsey in all cases)
 
 Expressions supported for type guards include simple names, member access chains (e.g. `a.b.c.d`), the unary `not` operator, the binary `and` and `or` operators, subscripts that are integer literals (e.g. `a[2]` or `a[-1]`), and call expressions. Other operators (such as arithmetic operators or other subscripts) are not supported.
 
@@ -303,7 +305,7 @@ def func4(value: str | int) -> str:
 
 If you later added another color to the `Color` enumeration above (e.g. `YELLOW = 4`), Pyright would detect that `func3` no longer exhausts all members of the enumeration and possibly returns `None`, which violates the declared return type. Likewise, if you modify the type of the `value` parameter in `func4` to expand the union, a similar error will be produced.
 
-This “narrowing for implied else” technique works for all narrowing expressions listed above with the exception of simple falsy/truthy statements and type guards. These are excluded because they are not generally used for exhaustive checks, and their inclusion would have a significant impact on analysis performance.
+This “narrowing for implied else” technique works for all narrowing expressions listed above with the exception of simple falsey/truthy statements and type guards. These are excluded because they are not generally used for exhaustive checks, and their inclusion would have a significant impact on analysis performance.
 
 ### Narrowing Any
 
@@ -578,3 +580,43 @@ reveal_type(Parent.x)  # object
 reveal_type(Child.x)  # int
 ```
 
+#### Type Variable Scoping
+
+A type variable must be bound to a valid scope (a class, function, or type alias) before it can be used within that scope.
+
+Pyright displays the bound scope for a type variable using an `@` symbol. For example, `T@func` means that type variable `T` is bound to function `func`.
+
+```python
+S = TypeVar("S")
+T = TypeVar("T")
+
+def func(a: T) -> T:
+    b: T = a # T refers to T@func
+    reveal_type(b) # T@func
+
+    c: S # Error: S has no bound scope in this context
+    return b
+```
+
+When a TypeVar or ParamSpec appears within parameter or return type annotations for a function and it is not already bound to an outer scope, it is normally bound to the function. As an exception to this rule, if the TypeVar or ParamSpec appears only within the return type annotation of the function and only within a single Callable in the return type, it is bound to that Callable rather than the function. This allows a function to return a generic Callable.
+
+```python
+# T is bound to func1 because it appears in a parameter type annotation.
+def func1(a: T) -> Callable[[T], T]:
+    a: T # OK because T is bound to func1
+
+# T is bound to the return callable rather than func2 because it appears
+# only within a return Callable.
+def func2() -> Callable[[T], T]:
+    a: T # Error because T has no bound scope in this context
+
+# T is bound to func3 because it appears outside of a Callable.
+def func3() -> Callable[[T], T] | T:
+    ...
+
+# This scoping logic applies also to type aliases used within a return
+# type annotation. T is bound to the return Callable rather than func4.
+Transform = Callable[[S], S]
+def func4() -> Transform[T]:
+    ...
+```

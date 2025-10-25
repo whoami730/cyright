@@ -749,15 +749,6 @@ export class Binder extends ParseTreeWalker {
             if (param.boundExpression) {
                 this.walk(param.boundExpression);
             }
-
-            if (param.defaultExpression) {
-                this.walk(param.defaultExpression);
-            }
-
-            // ! Cython
-            if (param.defaultValue) {
-                this.walk(param.defaultValue);
-            }
         });
 
         node.parameters.forEach((param) => {
@@ -783,6 +774,17 @@ export class Binder extends ParseTreeWalker {
                 );
             } else {
                 this._activeTypeParams.set(name.value, symbol);
+            }
+        });
+
+        node.parameters.forEach((param) => {
+            if (param.defaultExpression) {
+                this.walk(param.defaultExpression);
+            }
+            
+            // ! Cython
+            if (param.defaultValue) {
+                this.walk(param.defaultValue);
             }
         });
 
@@ -837,6 +839,15 @@ export class Binder extends ParseTreeWalker {
         if (node.typeAnnotationComment) {
             this.walk(node.typeAnnotationComment);
             this._addTypeDeclarationForVariable(node.leftExpression, node.typeAnnotationComment);
+        }
+
+        if (node.chainedTypeAnnotationComment) {
+            this._addDiagnostic(
+                this._fileInfo.diagnosticRuleSet.reportGeneralTypeIssues,
+                DiagnosticRule.reportGeneralTypeIssues,
+                Localizer.Diagnostic.annotationNotSupported(),
+                node.chainedTypeAnnotationComment
+            );
         }
 
         // If the assignment target base expression is potentially a

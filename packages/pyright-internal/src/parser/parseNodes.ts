@@ -955,6 +955,7 @@ export interface AssignmentNode extends ParseNodeBase {
     leftExpression: ExpressionNode;
     rightExpression: ExpressionNode;
     typeAnnotationComment?: ExpressionNode | undefined;
+    chainedTypeAnnotationComment?: ExpressionNode | undefined;
 }
 
 export namespace AssignmentNode {

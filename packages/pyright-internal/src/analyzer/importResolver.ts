@@ -375,9 +375,9 @@ export class ImportResolver {
         sourceFilePath: string,
         execEnv: ExecutionEnvironment,
         moduleDescriptor: ImportedModuleDescriptor
-    ): Set<string> {
+    ): Map<string, string> {
         const importFailureInfo: string[] = [];
-        const suggestions = new Set<string>();
+        const suggestions = new Map<string, string>();
 
         // Is it a relative import?
         if (moduleDescriptor.leadingDots > 0) {
@@ -712,6 +712,11 @@ export class ImportResolver {
     getTypeshedStdLibPath(execEnv: ExecutionEnvironment) {
         const unused: string[] = [];
         return this._getStdlibTypeshedPath(execEnv, unused);
+    }
+
+    getTypeshedThirdPartyPath(execEnv: ExecutionEnvironment) {
+        const unused: string[] = [];
+        return this._getThirdPartyTypeshedPath(execEnv, unused);
     }
 
     isStdlibModule(module: ImportedModuleDescriptor, execEnv: ExecutionEnvironment): boolean {
@@ -1789,7 +1794,7 @@ export class ImportResolver {
         execEnv: ExecutionEnvironment,
         moduleDescriptor: ImportedModuleDescriptor,
         isStdLib: boolean,
-        suggestions: Set<string>
+        suggestions: Map<string, string>
     ) {
         const importFailureInfo: string[] = [];
 
@@ -2111,7 +2116,7 @@ export class ImportResolver {
         sourceFilePath: string,
         execEnv: ExecutionEnvironment,
         moduleDescriptor: ImportedModuleDescriptor,
-        suggestions: Set<string>
+        suggestions: Map<string, string>
     ) {
         // Determine which search path this file is part of.
         const directory = getDirectoryLeadingDotsPointsTo(
@@ -2146,7 +2151,7 @@ export class ImportResolver {
         execEnv: ExecutionEnvironment,
         rootPath: string,
         moduleDescriptor: ImportedModuleDescriptor,
-        suggestions: Set<string>,
+        suggestions: Map<string, string>,
         strictOnly = true
     ) {
         // Starting at the specified path, walk the file system to find the
@@ -2208,7 +2213,7 @@ export class ImportResolver {
         execEnv: ExecutionEnvironment,
         currentPath: string,
         filter: string,
-        suggestions: Set<string>,
+        suggestions: Map<string, string>,
         leadingDots: number,
         parentNameParts: string[],
         strictOnly: boolean
@@ -2249,7 +2254,7 @@ export class ImportResolver {
                     return;
                 }
 
-                suggestions.add(fileWithoutExtension);
+                suggestions.set(fileWithoutExtension, combinePaths(currentPath, file));
             }
         });
 
@@ -2265,7 +2270,20 @@ export class ImportResolver {
                 return;
             }
 
-            suggestions.add(dir);
+            const initPyiPath = combinePaths(currentPath, dir, '__init__.pyi');
+            if (this.fileExistsCached(initPyiPath)) {
+                suggestions.set(dir, initPyiPath);
+                return;
+            }
+
+            const initPyPath = combinePaths(currentPath, dir, '__init__.py');
+            if (this.fileExistsCached(initPyPath)) {
+                suggestions.set(dir, initPyPath);
+                return;
+            }
+
+            // It is a namespace package. there is no corresponding module path.
+            suggestions.set(dir, '');
         });
     }
 
@@ -2298,7 +2316,7 @@ export class ImportResolver {
         return this._resolveImport(sourceFilePath, execEnv, moduleDescriptor).isImportFound;
     }
 
-    private _isUniqueValidSuggestion(suggestionToAdd: string, suggestions: Set<string>) {
+    private _isUniqueValidSuggestion(suggestionToAdd: string, suggestions: Map<string, string>) {
         if (suggestions.has(suggestionToAdd)) {
             return false;
         }

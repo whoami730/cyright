@@ -352,6 +352,30 @@ test('Loops31', () => {
     TestUtils.validateResults(analysisResults, 1);
 });
 
+test('Loops32', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['loops32.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Loops33', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['loops33.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Loops34', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['loops34.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Loops35', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['loops35.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('ForLoop1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['forLoop1.py']);
 
@@ -643,6 +667,12 @@ test('RecursiveTypeAlias12', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('RecursiveTypeAlias13', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['recursiveTypeAlias13.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('Classes1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['classes1.py']);
 
@@ -708,7 +738,7 @@ test('MethodOverride1', () => {
     // Turn on errors.
     configOptions.diagnosticRuleSet.reportIncompatibleMethodOverride = 'error';
     analysisResults = TestUtils.typeAnalyzeSampleFiles(['methodOverride1.py'], configOptions);
-    TestUtils.validateResults(analysisResults, 34);
+    TestUtils.validateResults(analysisResults, 35);
 });
 
 test('MethodOverride2', () => {
@@ -813,7 +843,7 @@ test('Enums10', () => {
 test('TypeGuard1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeGuard1.py']);
 
-    TestUtils.validateResults(analysisResults, 5);
+    TestUtils.validateResults(analysisResults, 7);
 });
 
 test('TypeGuard2', () => {
@@ -899,7 +929,7 @@ test('VariadicTypeVar4', () => {
 
     configOptions.defaultPythonVersion = PythonVersion.V3_11;
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['variadicTypeVar4.py'], configOptions);
-    TestUtils.validateResults(analysisResults, 4);
+    TestUtils.validateResults(analysisResults, 3);
 });
 
 test('VariadicTypeVar5', () => {
@@ -955,7 +985,7 @@ test('VariadicTypeVar11', () => {
 
     configOptions.defaultPythonVersion = PythonVersion.V3_11;
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['variadicTypeVar11.py'], configOptions);
-    TestUtils.validateResults(analysisResults, 4);
+    TestUtils.validateResults(analysisResults, 3);
 });
 
 test('VariadicTypeVar12', () => {
@@ -1036,6 +1066,14 @@ test('VariadicTypeVar21', () => {
     configOptions.defaultPythonVersion = PythonVersion.V3_11;
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['variadicTypeVar21.py'], configOptions);
     TestUtils.validateResults(analysisResults, 0);
+});
+
+test('VariadicTypeVar22', () => {
+    const configOptions = new ConfigOptions('.');
+
+    configOptions.defaultPythonVersion = PythonVersion.V3_11;
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['variadicTypeVar22.py'], configOptions);
+    TestUtils.validateResults(analysisResults, 2);
 });
 
 test('Match1', () => {
@@ -1125,7 +1163,7 @@ test('Match10', () => {
 
 test('List1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['list1.py']);
-    TestUtils.validateResults(analysisResults, 1);
+    TestUtils.validateResults(analysisResults, 3);
 });
 
 test('List2', () => {
