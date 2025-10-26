@@ -10,7 +10,7 @@ import assert from 'assert';
 import { CancellationToken } from 'vscode-languageserver';
 
 import { TextEditAction } from '../common/editAction';
-import { TextEditTracker } from '../common/textEditUtils';
+import { TextEditTracker } from '../common/textEditTracker';
 import { rangesAreEqual, TextRange } from '../common/textRange';
 import { ImportFormat } from '../languageService/autoImporter';
 import { ImportAdder } from '../languageService/importAdder';
@@ -1355,6 +1355,20 @@ test('use relative import format - textEditTracker', () => {
     testImportMoveWithTracker(code, ImportFormat.Relative);
 });
 
+test('dont include token not contained in the span', () => {
+    const code = `
+// @filename: test1.py
+//// import random
+//// 
+//// [|/*src*/answer_word = random.choice(["a","b","c","d"])
+//// |]guess_word = "c"
+
+// @filename: nested/__init__.py
+//// [|{|"r":"import random!n!!n!!n!"|}|][|/*dest*/|]
+        `;
+    testImportMove(code, ImportFormat.Absolute);
+});
+
 function testImportMoveWithTracker(code: string, importFormat = ImportFormat.Absolute) {
     const state = parseAndGetTestState(code).state;
 
@@ -1395,6 +1409,7 @@ function testImportMove(code: string, importFormat = ImportFormat.Absolute) {
 
     const edits = importMover.applyImports(
         importData,
+        dest.fileName,
         state.program.getBoundSourceFile(dest.fileName)!.getParseResults()!,
         dest.position,
         importFormat,

@@ -117,10 +117,6 @@ export const enum EvaluatorFlags {
     // Used for PEP 526-style variable type annotations
     VariableTypeAnnotation = 1 << 15,
 
-    // Emit an error if an incomplete recursive type alias is
-    // used in this context.
-    DisallowRecursiveTypeAliasPlaceholder = 1 << 16,
-
     // 'ClassVar' is not allowed in this context.
     DisallowClassVar = 1 << 17,
 
@@ -162,6 +158,9 @@ export interface TypeResult<T extends Type = Type> {
 
     unpackedType?: Type | undefined;
     typeList?: TypeResultWithNode[] | undefined;
+
+    // For inlined TypedDict definitions.
+    inlinedTypeDict?: ClassType;
 
     // Type consistency errors detected when evaluating this type.
     typeErrors?: boolean | undefined;
@@ -277,7 +276,7 @@ export interface AnnotationTypeOptions {
     associateTypeVarsWithScope?: boolean;
     allowTypeVarTuple?: boolean;
     allowParamSpec?: boolean;
-    disallowRecursiveTypeAlias?: boolean;
+    allowRequired?: boolean;
     allowUnpackedTypedDict?: boolean;
     allowUnpackedTuple?: boolean;
     notParsedByInterpreter?: boolean;
@@ -349,6 +348,11 @@ export interface PrintTypeOptions {
     useTypingUnpack?: boolean;
 }
 
+export interface DeclaredSymbolTypeInfo {
+    type: Type | undefined;
+    isTypeAlias?: boolean;
+}
+
 export interface TypeEvaluator {
     runWithCancellationToken<T>(token: CancellationToken, callback: () => T): T;
 
@@ -391,7 +395,7 @@ export interface TypeEvaluator {
 
     getDeclarationsForStringNode: (node: StringNode) => Declaration[] | undefined;
     getDeclarationsForNameNode: (node: NameNode, skipUnreachableCode?: boolean) => Declaration[] | undefined;
-    getTypeForDeclaration: (declaration: Declaration) => Type | undefined;
+    getTypeForDeclaration: (declaration: Declaration) => DeclaredSymbolTypeInfo;
     resolveAliasDeclaration: (
         declaration: Declaration,
         resolveLocalNames: boolean,
@@ -423,7 +427,7 @@ export interface TypeEvaluator {
         callback: (expandedSubtype: Type, unexpandedSubtype: Type) => Type | undefined
     ) => Type;
     lookUpSymbolRecursive: (node: ParseNode, name: string, honorCodeFlow: boolean) => SymbolWithScope | undefined;
-    getDeclaredTypeOfSymbol: (symbol: Symbol) => Type | undefined;
+    getDeclaredTypeOfSymbol: (symbol: Symbol) => DeclaredSymbolTypeInfo;
     getEffectiveTypeOfSymbol: (symbol: Symbol) => Type;
     getEffectiveTypeOfSymbolForUsage: (
         symbol: Symbol,
@@ -506,6 +510,11 @@ export interface TypeEvaluator {
         flags: AssignTypeFlags,
         recursionCount: number
     ) => boolean;
+
+    isFinalVariable: (symbol: Symbol) => boolean;
+    isFinalVariableDeclaration: (decl: Declaration) => boolean;
+    isExplicitTypeAliasDeclaration: (decl: Declaration) => boolean;
+
     addError: (message: string, node: ParseNode) => Diagnostic | undefined;
     addWarning: (message: string, node: ParseNode) => Diagnostic | undefined;
     addInformation: (message: string, node: ParseNode) => Diagnostic | undefined;

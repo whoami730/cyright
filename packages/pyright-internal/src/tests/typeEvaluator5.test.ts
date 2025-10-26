@@ -96,6 +96,14 @@ test('AutoVariance3', () => {
     TestUtils.validateResults(analysisResults, 13);
 });
 
+test('AutoVariance4', () => {
+    const configOptions = new ConfigOptions('.');
+    configOptions.defaultPythonVersion = PythonVersion.V3_12;
+
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['autoVariance4.py'], configOptions);
+    TestUtils.validateResults(analysisResults, 4);
+});
+
 test('TypeAliasStatement1', () => {
     const configOptions = new ConfigOptions('.');
     configOptions.defaultPythonVersion = PythonVersion.V3_12;
@@ -140,6 +148,22 @@ test('Hashability1', () => {
 test('Override1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['override1.py']);
     TestUtils.validateResults(analysisResults, 2);
+});
+
+test('Override1', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['override1.py']);
+    TestUtils.validateResults(analysisResults, 2);
+});
+
+test('Override2', () => {
+    const configOptions = new ConfigOptions('.');
+
+    const analysisResults1 = TestUtils.typeAnalyzeSampleFiles(['override2.py'], configOptions);
+    TestUtils.validateResults(analysisResults1, 0);
+
+    configOptions.diagnosticRuleSet.reportImplicitOverride = 'error';
+    const analysisResults2 = TestUtils.typeAnalyzeSampleFiles(['override2.py'], configOptions);
+    TestUtils.validateResults(analysisResults2, 2);
 });
 
 test('TypeVarDefault1', () => {

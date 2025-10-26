@@ -33,6 +33,8 @@ import {
     YieldNode,
 } from '../parser/parseNodes';
 
+export const UnresolvedModuleMarker = '*** unresolved ***';
+
 export const enum DeclarationType {
     Intrinsic,
     Variable,
@@ -156,15 +158,6 @@ export interface VariableDeclaration extends DeclarationBase {
     // constant in that reassignment is not permitted)?
     isFinal?: boolean;
 
-    // Is the declaration a "ClassVar"?
-    isClassVar?: boolean;
-
-    // Is the declaration annotated with "Required"?
-    isRequired?: boolean;
-
-    // Is the declaration annotated with "NotRequired"?
-    isNotRequired?: boolean;
-
     // Is the declaration an entry in __slots__?
     isDefinedBySlots?: boolean;
 
@@ -177,9 +170,6 @@ export interface VariableDeclaration extends DeclarationBase {
     // rather than an annotation? This is used for TypedDicts, NamedTuples,
     // and other complex (more dynamic) class definitions with typed variables.
     isRuntimeTypeExpression?: boolean;
-
-    // Points to the "TypeAlias" annotation described in PEP 613.
-    typeAliasAnnotation?: ExpressionNode | undefined;
 
     // If the declaration is a type alias, points to the alias name.
     typeAliasName?: NameNode | undefined;
@@ -314,6 +304,10 @@ export function isSpecialBuiltInClassDeclaration(decl: Declaration): decl is Spe
 
 export function isIntrinsicDeclaration(decl: Declaration): decl is IntrinsicDeclaration {
     return decl.type === DeclarationType.Intrinsic;
+}
+
+export function isUnresolvedAliasDeclaration(decl: Declaration): boolean {
+    return isAliasDeclaration(decl) && decl.path === UnresolvedModuleMarker;
 }
 
 // ! Cython Declaration

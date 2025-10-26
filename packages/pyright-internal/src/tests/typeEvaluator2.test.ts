@@ -132,6 +132,17 @@ test('Assignment11', () => {
     TestUtils.validateResults(analysisResults, 2);
 });
 
+test('Assignment12', () => {
+    const configOptions = new ConfigOptions('.');
+
+    const analysisResults1 = TestUtils.typeAnalyzeSampleFiles(['assignment12.py'], configOptions);
+    TestUtils.validateResults(analysisResults1, 0);
+
+    configOptions.diagnosticRuleSet.reportUnknownVariableType = 'error';
+    const analysisResults2 = TestUtils.typeAnalyzeSampleFiles(['assignment12.py'], configOptions);
+    TestUtils.validateResults(analysisResults2, 2);
+});
+
 test('AugmentedAssignment1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['augmentedAssignment1.py']);
 
@@ -200,6 +211,12 @@ test('Super8', () => {
 
 test('Super9', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['super9.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Super10', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['super10.py']);
 
     TestUtils.validateResults(analysisResults, 0);
 });
@@ -1014,6 +1031,12 @@ test('GenericTypes103', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('GenericTypes104', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['genericTypes104.py']);
+
+    TestUtils.validateResults(analysisResults, 1);
+});
+
 test('Protocol1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['protocol1.py']);
 
@@ -1234,6 +1257,12 @@ test('Protocol36', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('Protocol37', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['protocol37.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('TypedDict1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typedDict1.py']);
 
@@ -1303,7 +1332,7 @@ test('TypedDict11', () => {
 test('TypedDict12', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typedDict12.py']);
 
-    TestUtils.validateResults(analysisResults, 4);
+    TestUtils.validateResults(analysisResults, 6);
 });
 
 test('TypedDict13', () => {
@@ -1364,4 +1393,10 @@ test('TypedDict22', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typedDict22.py']);
 
     TestUtils.validateResults(analysisResults, 0);
+});
+
+test('TypedDictInline1', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typedDictInline1.py']);
+
+    TestUtils.validateResults(analysisResults, 8);
 });

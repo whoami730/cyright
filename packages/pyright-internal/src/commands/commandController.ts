@@ -70,6 +70,7 @@ export class CommandController implements ServerCommand {
     isLongRunningCommand(command: string): boolean {
         switch (command) {
             case Commands.createTypeStub:
+            case Commands.restartServer:
             case Commands.createCythonTypeStub: // ! Cython
                 return true;
 

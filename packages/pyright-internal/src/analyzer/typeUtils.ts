@@ -1986,13 +1986,21 @@ export function getGeneratorYieldType(declaredReturnType: Type, isAsync: boolean
     return isLegalGeneratorType ? yieldType : undefined;
 }
 
+export function isMetaclassInstance(type: Type): boolean {
+    return (
+        isClassInstance(type) &&
+        type.details.mro.some((mroClass) => isClass(mroClass) && ClassType.isBuiltIn(mroClass, 'type'))
+    );
+}
+
 export function isEffectivelyInstantiable(type: Type): boolean {
     if (TypeBase.isInstantiable(type)) {
         return true;
     }
 
-    // Handle the special case of 'type', which is instantiable.
-    if (isClassInstance(type) && ClassType.isBuiltIn(type, 'type')) {
+    // Handle the special case of 'type' (or subclasses thereof),
+    // which are instantiable.
+    if (isMetaclassInstance(type)) {
         return true;
     }
 
@@ -2004,6 +2012,11 @@ export function isEffectivelyInstantiable(type: Type): boolean {
 }
 
 export function convertToInstance(type: Type, includeSubclasses = true): Type {
+    // See if we've already performed this conversion and cached it.
+    if (type.cached?.instanceType) {
+        return type.cached.instanceType;
+    }
+
     let result = mapSubtypes(type, (subtype) => {
         switch (subtype.category) {
             case TypeCategory.Class: {
@@ -2058,10 +2071,21 @@ export function convertToInstance(type: Type, includeSubclasses = true): Type {
         );
     }
 
+    // Cache the converted value for next time.
+    if (!type.cached) {
+        type.cached = {};
+    }
+    type.cached.instanceType = result;
+
     return result;
 }
 
 export function convertToInstantiable(type: Type): Type {
+    // See if we've already performed this conversion and cached it.
+    if (type.cached?.instantiableType) {
+        return type.cached.instantiableType;
+    }
+
     let result = mapSubtypes(type, (subtype) => {
         switch (subtype.category) {
             case TypeCategory.Class: {
@@ -2095,6 +2119,12 @@ export function convertToInstantiable(type: Type): Type {
             type.typeAliasInfo.typeArguments
         );
     }
+
+    // Cache the converted value for next time.
+    if (!type.cached) {
+        type.cached = {};
+    }
+    type.cached.instantiableType = result;
 
     return result;
 }
@@ -2587,6 +2617,23 @@ export function requiresSpecialization(
     }
 
     return false;
+}
+
+// Combines two variances to produce a resulting variance.
+export function combineVariances(variance1: Variance, variance2: Variance) {
+    if (variance1 === Variance.Unknown) {
+        return variance2;
+    }
+
+    if (
+        variance2 === Variance.Invariant ||
+        (variance2 === Variance.Covariant && variance1 === Variance.Contravariant) ||
+        (variance2 === Variance.Contravariant && variance1 === Variance.Covariant)
+    ) {
+        return Variance.Invariant;
+    }
+
+    return variance1;
 }
 
 // Determines if the variance of the type argument for a generic class is compatible

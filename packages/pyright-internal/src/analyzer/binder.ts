@@ -123,6 +123,7 @@ import {
     ParameterDeclaration,
     TypeAliasDeclaration,
     TypeParameterDeclaration,
+    UnresolvedModuleMarker,
     VariableDeclaration,
 } from './declaration';
 import { extractParameterDocumentation } from './docStringUtils';
@@ -382,7 +383,7 @@ export class Binder extends ParseTreeWalker {
             return true;
         }
 
-        // Source found, but type stub is missing
+        // A source file was found, but the type stub was missing.
         if (
             !importResult.isStubFile &&
             importResult.importType === ImportType.ThirdParty &&
@@ -1740,7 +1741,7 @@ export class Binder extends ParseTreeWalker {
     }
 
     override visitImportFrom(node: ImportFromNode): boolean {
-        const typingSymbolsOfInterest = ['Final', 'TypeAlias', 'ClassVar', 'Required', 'NotRequired', 'Annotated'];
+        const typingSymbolsOfInterest = ['Final', 'ClassVar', 'Annotated'];
         const dataclassesSymbolsOfInterest = ['InitVar'];
         const importInfo = AnalyzerNodeInfo.getImportInfo(node.module);
 
@@ -2557,7 +2558,7 @@ export class Binder extends ParseTreeWalker {
         if (importInfo && importInfo.isImportFound && !importInfo.isNativeLib && importInfo.resolvedPaths.length > 0) {
             pathOfLastSubmodule = importInfo.resolvedPaths[importInfo.resolvedPaths.length - 1];
         } else {
-            pathOfLastSubmodule = '*** unresolved ***';
+            pathOfLastSubmodule = UnresolvedModuleMarker;
         }
 
         const isResolved =
@@ -2573,7 +2574,7 @@ export class Binder extends ParseTreeWalker {
                 loadSymbolsFromPath: false,
                 range: getEmptyRange(),
                 usesLocalName: !!importAlias,
-                moduleName: importInfo.importName,
+                moduleName: firstNamePartValue,
                 firstNamePart: firstNamePartValue,
                 isInExceptSuite: this._isInExceptSuite,
             };
@@ -2593,6 +2594,15 @@ export class Binder extends ParseTreeWalker {
                 isUnresolved: true,
                 isInExceptSuite: this._isInExceptSuite,
             };
+        }
+
+        // See if there is import info for this part of the path. This allows us
+        // to implicitly import all of the modules in a multi-part module name.
+        const implicitImportInfo = AnalyzerNodeInfo.getImportInfo(node.module.nameParts[0]);
+        if (implicitImportInfo && implicitImportInfo.resolvedPaths.length) {
+            newDecl.path = implicitImportInfo.resolvedPaths[0];
+            newDecl.loadSymbolsFromPath = true;
+            this._addImplicitImportsToLoaderActions(implicitImportInfo, newDecl);
         }
 
         // Add the implicit imports for this module if it's the last
@@ -2620,7 +2630,7 @@ export class Binder extends ParseTreeWalker {
                     const loaderActionPath =
                         importInfo && i < importInfo.resolvedPaths.length
                             ? importInfo.resolvedPaths[i]
-                            : '*** unresolved ***';
+                            : UnresolvedModuleMarker;
 
                     // Allocate a new loader action.
                     loaderActions = {
@@ -2635,13 +2645,24 @@ export class Binder extends ParseTreeWalker {
                     curLoaderActions.implicitImports.set(namePartValue, loaderActions);
                 }
 
-                // If this is the last name part we're resolving, add in the
-                // implicit imports as well.
                 if (i === node.module.nameParts.length - 1) {
+                    // If this is the last name part we're resolving, add in the
+                    // implicit imports as well.
                     if (importInfo && i < importInfo.resolvedPaths.length) {
                         loaderActions.path = importInfo.resolvedPaths[i];
                         loaderActions.loadSymbolsFromPath = true;
                         this._addImplicitImportsToLoaderActions(importInfo, loaderActions);
+                    }
+                } else {
+                    // If this isn't the last name part we're resolving, see if there
+                    // is import info for this part of the path. This allows us to implicitly
+                    // import all of the modules in a multi-part module name (e.g. "import a.b.c"
+                    // imports "a" and "a.b" and "a.b.c").
+                    const implicitImportInfo = AnalyzerNodeInfo.getImportInfo(node.module.nameParts[i]);
+                    if (implicitImportInfo && implicitImportInfo.resolvedPaths.length) {
+                        loaderActions.path = implicitImportInfo.resolvedPaths[i];
+                        loaderActions.loadSymbolsFromPath = true;
+                        this._addImplicitImportsToLoaderActions(implicitImportInfo, loaderActions);
                     }
                 }
 
@@ -3667,24 +3688,9 @@ export class Binder extends ParseTreeWalker {
                 const symbolWithScope = this._currentScope.lookUpSymbolRecursive(name.value);
                 if (symbolWithScope && symbolWithScope.symbol) {
                     const finalInfo = this._isAnnotationFinal(typeAnnotation);
-                    const isExplicitTypeAlias = this._isAnnotationTypeAlias(typeAnnotation);
 
                     let typeAnnotationNode: ExpressionNode | undefined = typeAnnotation;
-                    let innerTypeAnnotationNode: ExpressionNode | undefined = typeAnnotation;
-                    if (isExplicitTypeAlias) {
-                        typeAnnotationNode = undefined;
-                        innerTypeAnnotationNode = undefined;
-
-                        // Type aliases are allowed only in the global or class scope.
-                        if (
-                            this._currentScope.type !== ScopeType.Class &&
-                            this._currentScope.type !== ScopeType.Module &&
-                            this._currentScope.type !== ScopeType.Builtin
-                        ) {
-                            this._addError(Localizer.Diagnostic.typeAliasNotInModuleOrClass(), typeAnnotation);
-                        }
-                    } else if (finalInfo.isFinal) {
-                        innerTypeAnnotationNode = finalInfo.finalTypeNode;
+                    if (finalInfo.isFinal) {
                         if (!finalInfo.finalTypeNode) {
                             typeAnnotationNode = undefined;
                         }
@@ -3694,8 +3700,6 @@ export class Binder extends ParseTreeWalker {
                     let classVarInfo = this._isAnnotationClassVar(typeAnnotation);
 
                     if (classVarInfo.isClassVar) {
-                        innerTypeAnnotationNode = classVarInfo.classVarTypeNode;
-
                         if (!classVarInfo.classVarTypeNode) {
                             typeAnnotationNode = undefined;
                         }
@@ -3724,11 +3728,7 @@ export class Binder extends ParseTreeWalker {
                         node: target,
                         isConstant: isConstantName(name.value),
                         isFinal: finalInfo.isFinal,
-                        isClassVar: classVarInfo.isClassVar,
-                        isRequired: this._isRequiredAnnotation(innerTypeAnnotationNode),
-                        isNotRequired: this._isNotRequiredAnnotation(innerTypeAnnotationNode),
-                        typeAliasAnnotation: isExplicitTypeAlias ? typeAnnotation : undefined,
-                        typeAliasName: isExplicitTypeAlias ? target : undefined,
+                        typeAliasName: target,
                         path: this._fileInfo.filePath,
                         typeAnnotationNode,
                         range: convertTextRangeToRange(name, this._fileInfo.lines),
@@ -3878,87 +3878,13 @@ export class Binder extends ParseTreeWalker {
     }
 
     private _getVariableDocString(node: ExpressionNode): string | undefined {
-        // Walk up the parse tree to find an assignment expression.
-        let curNode: ParseNode | undefined = node;
-        let annotationNode: TypeAnnotationNode | undefined;
-
-        while (curNode) {
-            if (curNode.nodeType === ParseNodeType.Assignment) {
-                break;
-            }
-
-            if (curNode.nodeType === ParseNodeType.TypeAnnotation && !annotationNode) {
-                annotationNode = curNode;
-            }
-
-            curNode = curNode.parent;
-        }
-
-        if (curNode?.nodeType !== ParseNodeType.Assignment) {
-            // Allow a simple annotation statement to have a docstring even
-            // though PEP 258 doesn't mention this case. This PEP pre-dated
-            // PEP 526, so it didn't contemplate this situation.
-            if (annotationNode) {
-                curNode = annotationNode;
-            } else {
-                return undefined;
-            }
-        }
-
-        const parentNode = curNode.parent;
-        if (parentNode?.nodeType !== ParseNodeType.StatementList) {
-            return undefined;
-        }
-
-        const suiteOrModule = parentNode.parent;
-        if (
-            !suiteOrModule ||
-            (suiteOrModule.nodeType !== ParseNodeType.Module && suiteOrModule.nodeType !== ParseNodeType.Suite)
-        ) {
-            return undefined;
-        }
-
-        const assignmentIndex = suiteOrModule.statements.findIndex((node) => node === parentNode);
-        if (assignmentIndex < 0 || assignmentIndex === suiteOrModule.statements.length - 1) {
-            return undefined;
-        }
-
-        const nextStatement = suiteOrModule.statements[assignmentIndex + 1];
-
-        if (nextStatement.nodeType !== ParseNodeType.StatementList || !ParseTreeUtils.isDocString(nextStatement)) {
-            return undefined;
-        }
-
-        // See if the assignment is within one of the contexts specified in PEP 258.
-        let isValidContext = false;
-        if (parentNode?.parent?.nodeType === ParseNodeType.Module) {
-            // If we're at the top level of a module, the attribute docstring is valid.
-            isValidContext = true;
-        } else if (
-            parentNode?.parent?.nodeType === ParseNodeType.Suite &&
-            parentNode?.parent?.parent?.nodeType === ParseNodeType.Class
-        ) {
-            // If we're at the top level of a class, the attribute docstring is valid.
-            isValidContext = true;
-        } else {
-            const func = ParseTreeUtils.getEnclosingFunction(parentNode);
-
-            // If we're within an __init__ method, the attribute docstring is valid.
-            if (
-                func &&
-                func.name.value === '__init__' &&
-                ParseTreeUtils.getEnclosingClass(func, /* stopAtFunction */ true)
-            ) {
-                isValidContext = true;
-            }
-        }
-
-        if (!isValidContext) {
+        const docNode = ParseTreeUtils.getVariableDocStringNode(node);
+        if (!docNode) {
             return undefined;
         }
 
         // A docstring can consist of multiple joined strings in a single expression.
-        const strings = (nextStatement.statements[0] as StringListNode).strings;
+        const strings = docNode.strings;
         if (strings.length === 1) {
             // Common case.
             return strings[0].value;
@@ -4058,14 +3984,6 @@ export class Binder extends ParseTreeWalker {
         }
 
         return false;
-    }
-
-    private _isAnnotationTypeAlias(typeAnnotation: ExpressionNode | undefined) {
-        if (!typeAnnotation) {
-            return false;
-        }
-
-        return this._isTypingAnnotation(typeAnnotation, 'TypeAlias');
     }
 
     // Determines whether a member access expression is referring to a

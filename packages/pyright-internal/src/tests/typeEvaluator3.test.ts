@@ -513,17 +513,17 @@ test('TypeAlias4', () => {
 
     configOptions.defaultPythonVersion = PythonVersion.V3_9;
     const analysisResults3_9 = TestUtils.typeAnalyzeSampleFiles(['typeAlias4.py'], configOptions);
-    TestUtils.validateResults(analysisResults3_9, 11);
+    TestUtils.validateResults(analysisResults3_9, 1);
 
     configOptions.defaultPythonVersion = PythonVersion.V3_10;
     const analysisResults3_10 = TestUtils.typeAnalyzeSampleFiles(['typeAlias4.py'], configOptions);
-    TestUtils.validateResults(analysisResults3_10, 10);
+    TestUtils.validateResults(analysisResults3_10, 11);
 });
 
 test('TypeAlias5', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeAlias5.py']);
 
-    TestUtils.validateResults(analysisResults, 3);
+    TestUtils.validateResults(analysisResults, 4);
 });
 
 test('TypeAlias6', () => {
@@ -547,7 +547,7 @@ test('TypeAlias8', () => {
 test('TypeAlias9', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeAlias9.py']);
 
-    TestUtils.validateResults(analysisResults, 3);
+    TestUtils.validateResults(analysisResults, 4);
 });
 
 test('TypeAlias10', () => {
@@ -592,6 +592,29 @@ test('TypeAlias16', () => {
     TestUtils.validateResults(analysisResults, 0);
 });
 
+test('TypeAlias17', () => {
+    const configOptions = new ConfigOptions('.');
+
+    const analysisResults1 = TestUtils.typeAnalyzeSampleFiles(['typeAlias17.py'], configOptions);
+    TestUtils.validateResults(analysisResults1, 4);
+
+    configOptions.diagnosticRuleSet.reportMissingTypeArgument = 'error';
+    const analysisResults2 = TestUtils.typeAnalyzeSampleFiles(['typeAlias17.py'], configOptions);
+    TestUtils.validateResults(analysisResults2, 8);
+});
+
+test('TypeAlias18', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeAlias18.py']);
+
+    TestUtils.validateResults(analysisResults, 4);
+});
+
+test('TypeAlias20', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeAlias20.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
 test('RecursiveTypeAlias1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['recursiveTypeAlias1.py']);
 
@@ -622,7 +645,7 @@ test('RecursiveTypeAlias4', () => {
 test('RecursiveTypeAlias5', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['recursiveTypeAlias5.pyi']);
 
-    TestUtils.validateResults(analysisResults, 2);
+    TestUtils.validateResults(analysisResults, 0);
 });
 
 test('RecursiveTypeAlias6', () => {
@@ -1161,6 +1184,18 @@ test('Match10', () => {
     TestUtils.validateResults(analysisResults2, 4);
 });
 
+test('Match11', () => {
+    const configOptions = new ConfigOptions('.');
+
+    configOptions.defaultPythonVersion = PythonVersion.V3_10;
+    const analysisResults1 = TestUtils.typeAnalyzeSampleFiles(['match11.py'], configOptions);
+    TestUtils.validateResults(analysisResults1, 0);
+
+    configOptions.diagnosticRuleSet.reportUnnecessaryComparison = 'error';
+    const analysisResults2 = TestUtils.typeAnalyzeSampleFiles(['match11.py'], configOptions);
+    TestUtils.validateResults(analysisResults2, 7);
+});
+
 test('List1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['list1.py']);
     TestUtils.validateResults(analysisResults, 3);
@@ -1195,7 +1230,7 @@ test('Comparison2', () => {
 
     configOptions.diagnosticRuleSet.reportUnnecessaryComparison = 'error';
     const analysisResults2 = TestUtils.typeAnalyzeSampleFiles(['comparison2.py'], configOptions);
-    TestUtils.validateResults(analysisResults2, 9);
+    TestUtils.validateResults(analysisResults2, 10);
 });
 
 test('EmptyContainers1', () => {

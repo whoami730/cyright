@@ -19,13 +19,13 @@ import {
 import { FileEditActions } from '../common/editAction';
 import { convertPathToUri, getShortenedFileName } from '../common/pathUtils';
 import { Range } from '../common/textRange';
-import { convertWorkspaceDocumentEdits } from '../common/workspaceEditUtils';
-import { WorkspaceServiceInstance } from '../languageServerBase';
+import { convertToWorkspaceEdit } from '../common/workspaceEditUtils';
 import { Localizer } from '../localization/localize';
+import { Workspace } from '../workspaceFactory';
 
 export class CodeActionProvider {
     static async getCodeActionsForPosition(
-        workspace: WorkspaceServiceInstance,
+        workspace: Workspace,
         filePath: string,
         range: Range,
         kinds: CodeActionKind[] | undefined,
@@ -36,7 +36,7 @@ export class CodeActionProvider {
         const codeActions: CodeAction[] = [];
 
         if (!workspace.disableLanguageServices) {
-            const diags = await workspace.serviceInstance.getDiagnosticsForRange(filePath, range, token);
+            const diags = await workspace.service.getDiagnosticsForRange(filePath, range, token);
             const typeStubDiag = diags.find((d) => {
                 const actions = d.getActions();
                 return actions && actions.find((a) => a.action === Commands.createTypeStub);
@@ -52,7 +52,7 @@ export class CodeActionProvider {
                         Command.create(
                             Localizer.CodeAction.createTypeStub(),
                             Commands.createTypeStub,
-                            workspace.path,
+                            workspace.rootPath,
                             action.moduleName,
                             filePath
                         ),
@@ -72,7 +72,7 @@ export class CodeActionProvider {
                     .getActions()!
                     .find((a) => a.action === Commands.addMissingOptionalToParam) as AddMissingOptionalToParamAction;
                 if (action) {
-                    const fs = workspace.serviceInstance.getImportResolver().fileSystem;
+                    const fs = workspace.service.getImportResolver().fileSystem;
                     const addMissingOptionalAction = CodeAction.create(
                         Localizer.CodeAction.addOptionalToAnnotation(),
                         Command.create(
@@ -99,7 +99,7 @@ export class CodeActionProvider {
                         oldFile: getShortenedFileName(action.oldFile),
                         newFile: getShortenedFileName(action.newFile),
                     });
-                    const fs = workspace.serviceInstance.getImportResolver().fileSystem;
+                    const fs = workspace.service.getImportResolver().fileSystem;
                     const editActions: FileEditActions = {
                         edits: [],
                         fileOperations: [
@@ -110,7 +110,7 @@ export class CodeActionProvider {
                             },
                         ],
                     };
-                    const workspaceEdit = convertWorkspaceDocumentEdits(fs, editActions);
+                    const workspaceEdit = convertToWorkspaceEdit(fs, editActions);
                     const renameAction = CodeAction.create(title, workspaceEdit, CodeActionKind.QuickFix);
                     codeActions.push(renameAction);
                 }

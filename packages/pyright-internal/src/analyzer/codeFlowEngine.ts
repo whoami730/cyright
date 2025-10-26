@@ -148,10 +148,16 @@ interface CodeFlowTypeCache {
 }
 
 // This debugging option prints the control flow graph when getTypeFromCodeFlow is called.
-const isPrintControlFlowGraphEnabled = false;
+const enablePrintControlFlowGraph = false;
 
 // This debugging option prints the results of calls to isCallNoReturn.
-const isPrintCallNoReturnEnabled = false;
+const enablePrintCallNoReturn = false;
+
+// Should the code flow engine assume that an unannotated function does not have
+// an inferred return type of `NoReturn`, or should it perform code flow analysis
+// to determine whether it is `NoReturn`? Enabling this produces more consistent
+// and complete results, but it can be very expensive.
+const inferNoReturnForUnannotatedFunctions = false;
 
 export function getCodeFlowEngine(
     evaluator: TypeEvaluator,
@@ -194,7 +200,7 @@ export function getCodeFlowEngine(
             typeAtStart: Type,
             options?: FlowNodeTypeOptions
         ): FlowNodeTypeResult {
-            if (isPrintControlFlowGraphEnabled) {
+            if (enablePrintControlFlowGraph) {
                 printControlFlowGraph(flowNode, reference, 'getTypeFromCodeFlow');
             }
 
@@ -952,7 +958,7 @@ export function getCodeFlowEngine(
                         }
 
                         // If we saw a pending or incomplete entry, do not save over the top
-                        // of the cache entry because we'll overwrite the partial
+                        // of the cache entry because we'll overwrite the partial result.
                         if (sawPending || sawIncomplete) {
                             return { type: effectiveType, isIncomplete: reportIncomplete };
                         }
@@ -1030,7 +1036,7 @@ export function getCodeFlowEngine(
     function isFlowNodeReachable(flowNode: FlowNode, sourceFlowNode?: FlowNode, ignoreNoReturn = false): boolean {
         const visitedFlowNodeMap = new Set<number>();
 
-        if (isPrintControlFlowGraphEnabled) {
+        if (enablePrintControlFlowGraph) {
             printControlFlowGraph(flowNode, /* reference */ undefined, 'isFlowNodeReachable');
         }
 
@@ -1348,7 +1354,7 @@ export function getCodeFlowEngine(
     function isCallNoReturn(evaluator: TypeEvaluator, flowNode: FlowCall) {
         const node = flowNode.node;
 
-        if (isPrintCallNoReturnEnabled) {
+        if (enablePrintCallNoReturn) {
             console.log(`isCallNoReturn@${flowNode.id} Pre depth ${noReturnAnalysisDepth}`);
         }
 
@@ -1356,7 +1362,7 @@ export function getCodeFlowEngine(
         if (callIsNoReturnCache.has(node.id)) {
             const result = callIsNoReturnCache.get(node.id);
 
-            if (isPrintCallNoReturnEnabled) {
+            if (enablePrintCallNoReturn) {
                 console.log(`isCallNoReturn@${flowNode.id} Post: ${result ? 'true' : 'false'} (cached)`);
             }
 
@@ -1499,7 +1505,7 @@ export function getCodeFlowEngine(
             // Cache the value for next time.
             callIsNoReturnCache.set(node.id, callIsNoReturn);
 
-            if (isPrintCallNoReturnEnabled) {
+            if (enablePrintCallNoReturn) {
                 console.log(`isCallNoReturn@${flowNode.id} Post: ${callIsNoReturn ? 'true' : 'false'}`);
             }
 
@@ -1511,9 +1517,9 @@ export function getCodeFlowEngine(
 
     function isFunctionNoReturn(functionType: FunctionType, isCallAwaited: boolean) {
         const returnType = functionType.details.declaredReturnType;
-        if (FunctionType.isAsync(functionType)) {
+        if (returnType) {
             if (
-                returnType &&
+                FunctionType.isAsync(functionType) &&
                 isClassInstance(returnType) &&
                 ClassType.isBuiltIn(returnType, 'Coroutine') &&
                 returnType.typeArguments &&
@@ -1523,14 +1529,16 @@ export function getCodeFlowEngine(
                     return true;
                 }
             }
-        } else if (returnType) {
+
             return isNever(returnType);
+        } else if (!inferNoReturnForUnannotatedFunctions) {
+            return false;
         } else if (functionType.details.declaration) {
-            // If the function has yield expressions, it's a generator, and
-            // we'll assume the yield statements are reachable. Also, don't
-            // infer a "no return" type for abstract methods.
+            // If the function is a generator (i.e. it has yield statements)
+            // then it is not a "no return" call. Also, don't infer a "no
+            // return" type for abstract methods.
             if (
-                !functionType.details.declaration.yieldStatements &&
+                !functionType.details.declaration.isGenerator &&
                 !FunctionType.isAbstractMethod(functionType) &&
                 !FunctionType.isStubDefinition(functionType) &&
                 !FunctionType.isPyTypedDefinition(functionType)

@@ -65,7 +65,7 @@ export class BackgroundAnalysisProgram {
         return this._backgroundAnalysis;
     }
 
-    contains(filePath: string): boolean {
+    hasSourceFile(filePath: string): boolean {
         return !!this._program.getSourceFile(filePath);
     }
 
@@ -125,9 +125,9 @@ export class BackgroundAnalysisProgram {
         this._reportDiagnosticsForRemovedFiles(diagnostics);
     }
 
-    addTrackedFile(filePath: string, isThirdPartyImport: boolean) {
-        this._backgroundAnalysis?.addTrackedFile(filePath, isThirdPartyImport);
-        this._program.addTrackedFile(filePath, isThirdPartyImport);
+    addInterimFile(filePath: string) {
+        this._backgroundAnalysis?.addInterimFile(filePath);
+        this._program.addInterimFile(filePath);
     }
 
     markAllFilesDirty(evenIfContentsAreSame: boolean, indexingNeeded = true) {

@@ -297,6 +297,12 @@ test('TypeNarrowingTypeIs1', () => {
     TestUtils.validateResults(analysisResults, 3);
 });
 
+test('TypeNarrowingTypeEquals1', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeNarrowingTypeEquals1.py']);
+
+    TestUtils.validateResults(analysisResults, 3);
+});
+
 test('TypeNarrowingIsNone1', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['typeNarrowingIsNone1.py']);
 
@@ -1386,6 +1392,12 @@ test('Partial1', () => {
 
 test('Partial2', () => {
     const analysisResults = TestUtils.typeAnalyzeSampleFiles(['partial2.py']);
+
+    TestUtils.validateResults(analysisResults, 0);
+});
+
+test('Partial3', () => {
+    const analysisResults = TestUtils.typeAnalyzeSampleFiles(['partial3.py']);
 
     TestUtils.validateResults(analysisResults, 0);
 });

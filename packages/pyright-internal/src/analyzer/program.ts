@@ -20,13 +20,14 @@ import {
     SemanticTokens,
 } from 'vscode-languageserver-types';
 
+import { Commands } from '../commands/commands';
 import { OperationCanceledException, throwIfCancellationRequested } from '../common/cancellationUtils';
-import { appendArray } from '../common/collectionUtils';
+import { appendArray, arrayEquals } from '../common/collectionUtils';
 import { ConfigOptions, ExecutionEnvironment, matchFileSpecs } from '../common/configOptions';
 import { ConsoleInterface, StandardConsole } from '../common/console';
 import { assert, assertNever } from '../common/debug';
-import { Diagnostic } from '../common/diagnostic';
-import { DiagnosticSink, FileDiagnostics } from '../common/diagnosticSink';
+import { Diagnostic, DiagnosticCategory } from '../common/diagnostic';
+import { FileDiagnostics } from '../common/diagnosticSink';
 import { FileEditAction, FileEditActions, FileOperations, TextEditAction } from '../common/editAction';
 import { Extensions } from '../common/extensibility';
 import { LogTracker } from '../common/logTracker';
@@ -44,7 +45,7 @@ import {
 } from '../common/pathUtils';
 import { convertPositionToOffset, convertRangeToTextRange, convertTextRangeToRange } from '../common/positionUtils';
 import { computeCompletionSimilarity } from '../common/stringUtils';
-import { applyTextEditActions } from '../common/textEditUtils';
+import { TextEditTracker } from '../common/textEditTracker';
 import {
     DocumentRange,
     doesRangeContain,
@@ -52,8 +53,11 @@ import {
     getEmptyRange,
     Position,
     Range,
+    TextRange,
 } from '../common/textRange';
+import { TextRangeCollection } from '../common/textRangeCollection';
 import { Duration, timingStats } from '../common/timing';
+import { applyTextEditsToString } from '../common/workspaceEditUtils';
 import {
     AutoImporter,
     AutoImportOptions,
@@ -73,8 +77,8 @@ import { DefinitionFilter } from '../languageService/definitionProvider';
 import { DocumentSymbolCollector, DocumentSymbolCollectorUseCase } from '../languageService/documentSymbolCollector';
 import { IndexOptions, IndexResults, WorkspaceSymbolCallback } from '../languageService/documentSymbolProvider';
 import { HoverResults } from '../languageService/hoverProvider';
-import { ImportAdder } from '../languageService/importAdder';
-import { getNewlineIndentation, reindentSpan } from '../languageService/indentationUtils';
+import { ImportAdder, ImportData } from '../languageService/importAdder';
+import { getModuleStatementIndentation, reindentSpan } from '../languageService/indentationUtils';
 import { getInsertionPointForSymbolUnderModule } from '../languageService/insertionPointUtils';
 import { ReferenceCallback, ReferencesResult } from '../languageService/referencesProvider';
 import { RenameModuleProvider } from '../languageService/renameModuleProvider';
@@ -89,11 +93,18 @@ import { Declaration } from './declaration';
 import { getNameFromDeclaration } from './declarationUtils';
 import { ImportResolver } from './importResolver';
 import { ImportResult, ImportType } from './importResult';
-import { findNodeByOffset, getDocString, getFullStatementRange, isBlankLine } from './parseTreeUtils';
+import {
+    findNodeByOffset,
+    findNodeByPosition,
+    getDocString,
+    getDottedName,
+    getDottedNameWithGivenNodeAsLastName,
+    isBlankLine,
+} from './parseTreeUtils';
 import { Scope } from './scope';
 import { getScopeForNode } from './scopeUtils';
-import { IPythonMode, parseFile, SourceFile } from './sourceFile';
-import { isUserCode } from './sourceFileInfoUtils';
+import { IPythonMode, SourceFile } from './sourceFile';
+import { collectImportedByFiles, isUserCode } from './sourceFileInfoUtils';
 import { isStubFile, SourceMapper } from './sourceMapper';
 import { Symbol } from './symbol';
 import { isPrivateOrProtectedName } from './symbolNameUtils';
@@ -311,6 +322,16 @@ export class Program {
         });
     }
 
+    addInterimFile(filePath: string): SourceFileInfo {
+        // Double check not already there.
+        let fileInfo = this.getSourceFileInfo(filePath);
+        if (!fileInfo) {
+            fileInfo = this._createInterimFileInfo(filePath);
+            this._addToSourceFileListAndMap(fileInfo);
+        }
+        return fileInfo;
+    }
+
     addTrackedFile(filePath: string, isThirdPartyImport = false, isInPyTypedPackage = false): SourceFile {
         let sourceFileInfo = this.getSourceFileInfo(filePath);
         const importName = this._getImportNameForFile(filePath);
@@ -397,11 +418,6 @@ export class Program {
         }
 
         sourceFileInfo.sourceFile.setClientVersion(version, contents);
-
-        // Tell any extensions that this source file changed.
-        Extensions.getProgramExtensions(filePath).forEach((e) =>
-            e.sourceFileChanged ? e.sourceFileChanged(sourceFileInfo!) : undefined
-        );
     }
 
     getChainedFilePath(filePath: string): string | undefined {
@@ -508,8 +524,8 @@ export class Program {
         return this._sourceFileList.filter((s) => isUserCode(s)).length;
     }
 
-    getTracked(): SourceFileInfo[] {
-        return this._sourceFileList.filter((s) => s.isTracked);
+    getUserFiles(): SourceFileInfo[] {
+        return this._sourceFileList.filter((s) => isUserCode(s));
     }
 
     getOpened(): SourceFileInfo[] {
@@ -575,13 +591,13 @@ export class Program {
         return this._sourceFileMap.get(normalizePathCase(this._fs, filePath));
     }
 
-    getBoundSourceFileInfo(filePath: string): SourceFileInfo | undefined {
+    getBoundSourceFileInfo(filePath: string, content?: string, force?: boolean): SourceFileInfo | undefined {
         const sourceFileInfo = this.getSourceFileInfo(filePath);
         if (!sourceFileInfo) {
             return undefined;
         }
 
-        this._bindFile(sourceFileInfo);
+        this._bindFile(sourceFileInfo, content, force);
         return sourceFileInfo;
     }
 
@@ -942,8 +958,7 @@ export class Program {
         let shadowFileInfo = this.getSourceFileInfo(shadowImplPath);
 
         if (!shadowFileInfo) {
-            shadowFileInfo = this._createInterimFileInfo(shadowImplPath);
-            this._addToSourceFileListAndMap(shadowFileInfo);
+            shadowFileInfo = this.addInterimFile(shadowImplPath);
         }
 
         if (!shadowFileInfo.shadows.includes(stubFile)) {
@@ -1015,8 +1030,8 @@ export class Program {
         return this._evaluator;
     }
 
-    private _parseFile(fileToParse: SourceFileInfo, content?: string) {
-        if (!this._isFileNeeded(fileToParse) || !fileToParse.sourceFile.isParseRequired()) {
+    private _parseFile(fileToParse: SourceFileInfo, content?: string, force?: boolean) {
+        if (!force && (!this._isFileNeeded(fileToParse) || !fileToParse.sourceFile.isParseRequired())) {
             return;
         }
 
@@ -1040,12 +1055,12 @@ export class Program {
 
     // Binds the specified file and all of its dependencies, recursively. If
     // it runs out of time, it returns true. If it completes, it returns false.
-    private _bindFile(fileToAnalyze: SourceFileInfo, content?: string): void {
-        if (!this._isFileNeeded(fileToAnalyze) || !fileToAnalyze.sourceFile.isBindingRequired()) {
+    private _bindFile(fileToAnalyze: SourceFileInfo, content?: string, force?: boolean): void {
+        if (!force && (!this._isFileNeeded(fileToAnalyze) || !fileToAnalyze.sourceFile.isBindingRequired())) {
             return;
         }
 
-        this._parseFile(fileToAnalyze, content);
+        this._parseFile(fileToAnalyze, content, force);
 
         const getScopeIfAvailable = (fileInfo: SourceFileInfo | undefined) => {
             if (!fileInfo || fileInfo === fileToAnalyze) {
@@ -1255,15 +1270,23 @@ export class Program {
                 let dependentFiles: ParseResults[] | undefined = undefined;
                 if (fileToCheck.sourceFile.getIPythonMode() === IPythonMode.CellDocs) {
                     dependentFiles = [];
-                    const importedByFiles = new Set<SourceFileInfo>();
-                    this._collectImportedByFiles(fileToCheck, importedByFiles);
+                    const importedByFiles = collectImportedByFiles(fileToCheck);
                     for (const file of importedByFiles) {
                         if (!isUserCode(file)) {
                             continue;
                         }
 
                         // If the file is already analyzed, it will be no op.
-                        this._checkTypes(file, token);
+                        // And make sure we don't dump parse tree and etc while
+                        // recursively calling checker. Otherwise, inner check
+                        // can dump parse tree required by outer check.
+                        const handle = this._cacheManager.pauseTracking();
+                        try {
+                            this._checkTypes(file, token);
+                        } finally {
+                            handle.dispose();
+                        }
+
                         const parseResults = file.sourceFile.getParseResults();
                         if (parseResults) {
                             dependentFiles.push(parseResults);
@@ -1312,18 +1335,6 @@ export class Program {
             }
 
             return true;
-        });
-    }
-
-    private _collectImportedByFiles(file: SourceFileInfo, importedByFiles: Set<SourceFileInfo>) {
-        file.importedBy.forEach((dep) => {
-            if (importedByFiles.has(dep)) {
-                // Already visited.
-                return;
-            }
-
-            importedByFiles.add(dep);
-            this._collectImportedByFiles(dep, importedByFiles);
         });
     }
 
@@ -1708,15 +1719,14 @@ export class Program {
             this._bindFile(sourceFileInfo);
 
             const execEnv = this._configOptions.findExecEnvironment(filePath);
-            const referencesResult = sourceFileInfo.sourceFile.getDeclarationForPosition(
-                this._createSourceMapper(execEnv, token, sourceFileInfo),
+            const referencesResult = this._getDeclarationForPosition(
+                sourceFileInfo,
                 position,
-                this._evaluator!,
-                reporter,
                 DocumentSymbolCollectorUseCase.Reference,
-                token
+                this._createSourceMapper(execEnv, token, sourceFileInfo),
+                token,
+                reporter
             );
-
             if (!referencesResult) {
                 return;
             }
@@ -2095,26 +2105,6 @@ export class Program {
         newFilePath: string,
         position: Position,
         options: { importFormat: ImportFormat },
-        token?: CancellationToken
-    ): FileEditActions | undefined {
-        if (CancellationToken.is(options)) {
-            return this._moveSymbolAtPosition(
-                filePath,
-                newFilePath,
-                position,
-                { importFormat: ImportFormat.Absolute },
-                options
-            );
-        }
-
-        return this._moveSymbolAtPosition(filePath, newFilePath, position, options, token!);
-    }
-
-    private _moveSymbolAtPosition(
-        filePath: string,
-        newFilePath: string,
-        position: Position,
-        options: { importFormat: ImportFormat },
         token: CancellationToken
     ): FileEditActions | undefined {
         return this._runEvaluatorWithCancellationToken(token, () => {
@@ -2153,10 +2143,26 @@ export class Program {
             }
 
             // If this isn't a name node, there are no references to be found.
-            if (node.nodeType !== ParseNodeType.Name) {
+            if (
+                node.nodeType !== ParseNodeType.Name ||
+                !RenameModuleProvider.canMoveSymbol(this._configOptions, this._evaluator!, node)
+            ) {
                 return undefined;
             }
 
+            // We will try to
+            // 1. Find symbol to move.
+            // 2. Update all references to the symbol to new location.
+            // 3. Remove the existing symbol.
+            // 4. Insert the symbol to the destination module.
+            // 5. Insert imports required for the symbol moved to the destination module.
+            // 6. Remove import no longer needed from the original module.
+            //
+            // Here all changes are done to edits, no features in LS will apply changes to
+            // program directly. All modification is done through LSP by a edit request so
+            // things like undo or edit stacks UI works.
+
+            // 1. Find symbol to move.
             const execEnv = this._configOptions.findExecEnvironment(filePath);
             const declarations = DocumentSymbolCollector.getDeclarationsForNode(
                 node,
@@ -2180,8 +2186,10 @@ export class Program {
                 return undefined;
             }
 
+            // 2. Update affected references.
             this._processModuleReferences(renameModuleProvider, node.value, filePath);
 
+            // 3. Remove existing symbols.
             const sourceDecl = renameModuleProvider.declarations.find(
                 (d) => d.node && getFileExtension(d.path) === sourceFileExt
             );
@@ -2190,17 +2198,15 @@ export class Program {
                 return undefined;
             }
 
+            const symbolRange = RenameModuleProvider.getSymbolTextRange(parseResults, sourceDecl);
             const importAdder = new ImportAdder(this._configOptions, this._importResolver, this._evaluator!);
-            const collectedimports = importAdder.collectImportsForSymbolsUsed(parseResults, sourceDecl.node, token);
+            const collectedImports = importAdder.collectImportsForSymbolsUsed(parseResults, symbolRange, token);
 
             let insertionPoint: number | undefined = 0;
             let insertionIndentation = 0;
 
             const newFileParseResults = newFileInfo?.sourceFile.getParseResults();
             if (newFileParseResults) {
-                // TODO: Add "insertAfter" option to make sure we insert symbol after that point.
-                //       For example, if collectedImports has symbols from the destination file, we should
-                //       insert after those symbols are defined.
                 const insertBefore = renameModuleProvider.tryGetFirstSymbolUsage(newFileParseResults);
                 insertionPoint = getInsertionPointForSymbolUnderModule(
                     this._evaluator!,
@@ -2216,29 +2222,25 @@ export class Program {
                     return undefined;
                 }
 
-                insertionIndentation = getNewlineIndentation(newFileParseResults, insertionPoint);
+                insertionIndentation = getModuleStatementIndentation(newFileParseResults);
             }
 
-            const fileOperations: FileOperations[] = [];
+            const reindentResult = reindentSpan(parseResults, symbolRange, insertionIndentation);
+            const fullRange = RenameModuleProvider.getSymbolFullStatementTextRange(parseResults, sourceDecl);
+
             renameModuleProvider.textEditTracker.addEdit(
                 filePath,
-                getFullStatementRange(sourceDecl.node, parseResults, { includeTrailingBlankLines: true }),
+                convertTextRangeToRange(
+                    TextRange.combine([reindentResult.originalSpan, fullRange])!,
+                    parseResults.tokenizerOutput.lines
+                ),
                 ''
             );
 
-            let codeSnippetToInsert = reindentSpan(parseResults, sourceDecl.node, insertionIndentation);
+            // 4. Add the symbol to the destination file.
+            const fileOperations: FileOperations[] = [];
+            let codeSnippetToInsert = reindentResult.text;
             if (newFileParseResults) {
-                // TODO: We need to "add import" statement for symbols defined in the destination file
-                //       if we couldn't find insertion point where all constraints are met.
-                //       For example, if the symbol we are moving is used before other symbols it references are declared.
-                importAdder.applyImportsTo(
-                    collectedimports,
-                    newFileParseResults,
-                    options.importFormat,
-                    renameModuleProvider.textEditTracker,
-                    token
-                );
-
                 const range = convertTextRangeToRange(
                     { start: insertionPoint, length: 0 },
                     newFileParseResults.tokenizerOutput.lines
@@ -2252,37 +2254,223 @@ export class Program {
                 renameModuleProvider.textEditTracker.addEdit(newFilePath, range, codeSnippetToInsert);
             } else {
                 fileOperations.push({ kind: 'create', filePath: newFilePath });
+                renameModuleProvider.textEditTracker.addEdit(newFilePath, getEmptyRange(), codeSnippetToInsert);
+            }
 
-                const tempParseResults = parseFile(
-                    this._configOptions,
-                    newFilePath,
-                    codeSnippetToInsert,
-                    IPythonMode.None,
-                    new DiagnosticSink()
-                );
+            // 5. Insert imports required for the symbol moved to the destination module.
+            //
+            // Since step 5 and 6 can create nested edits, we clone the program and apply all changes to re-calculate
+            // edits we need to apply to the destination file. The same workflow as `fix all` but done in program level
+            // not service level.
+            const cloned = this.clone();
+
+            let edits = renameModuleProvider.getEdits();
+
+            const textAfterSymbolAdded = applyTextEditsToString(
+                edits.filter((v) => v.filePath === newFilePath),
+                newFileParseResults?.tokenizerOutput.lines ?? new TextRangeCollection<TextRange>([]),
+                newFileInfo?.sourceFile.getFileContent() ?? ''
+            );
+
+            _updateFileContent(cloned, newFilePath, textAfterSymbolAdded);
+
+            const textAfterImportsAdded = _tryGetTextAfterImportsAdded(
+                cloned,
+                newFilePath,
+                collectedImports,
+                insertionPoint,
+                token
+            );
+
+            edits = _updateFileEditActions(
+                edits,
+                newFilePath,
+                newFileParseResults,
+                textAfterSymbolAdded,
+                textAfterImportsAdded
+            );
+
+            // 6. Remove imports no longer required from original module.
+            const textAfterSymbolRemoved = applyTextEditsToString(
+                edits.filter((v) => v.filePath === filePath),
+                parseResults.tokenizerOutput.lines,
+                fileInfo.sourceFile.getFileContent()!
+            );
+
+            _updateFileContent(cloned, filePath, textAfterSymbolRemoved);
+
+            const textAfterUnusedImportsRemoved = _tryGetTextAfterUnusedImportsRemoved(
+                cloned,
+                filePath,
+                collectedImports,
+                0,
+                token
+            );
+
+            edits = _updateFileEditActions(
+                edits,
+                filePath,
+                parseResults,
+                textAfterSymbolRemoved,
+                textAfterUnusedImportsRemoved
+            );
+
+            cloned.dispose();
+
+            return {
+                edits,
+                fileOperations,
+            };
+
+            function _updateFileEditActions(
+                edits: FileEditAction[],
+                filePath: string,
+                parseResults: ParseResults | undefined,
+                oldText: string,
+                newText: string | undefined
+            ) {
+                if (newText === undefined || oldText === newText) {
+                    return edits;
+                }
+
+                // There were nested edits. Replace whole file.
+                edits = edits.filter((v) => v.filePath !== filePath);
+                edits.push({
+                    filePath,
+                    range: parseResults
+                        ? convertTextRangeToRange(parseResults.parseTree, parseResults.tokenizerOutput.lines)
+                        : getEmptyRange(),
+                    replacementText: newText,
+                });
+
+                return edits;
+            }
+
+            function _tryGetTextAfterImportsAdded(
+                cloned: Program,
+                filePath: string,
+                importData: ImportData,
+                insertionPoint: number,
+                token: CancellationToken
+            ) {
+                const sourceFile = cloned.getBoundSourceFile(filePath);
+                const parseResults = sourceFile?.getParseResults();
+                if (!parseResults) {
+                    return undefined;
+                }
 
                 const insertAddEdits = importAdder.applyImports(
-                    collectedimports,
-                    tempParseResults,
+                    importData,
+                    filePath,
+                    parseResults,
                     insertionPoint,
                     options.importFormat,
                     token
                 );
 
-                const updateContent = applyTextEditActions(
-                    codeSnippetToInsert,
+                return applyTextEditsToString(
                     insertAddEdits,
-                    tempParseResults.tokenizerOutput.lines
+                    parseResults.tokenizerOutput.lines,
+                    sourceFile!.getFileContent()!
                 );
-
-                renameModuleProvider.textEditTracker.addEdit(newFilePath, getEmptyRange(), updateContent);
             }
 
-            return {
-                edits: renameModuleProvider.getEdits(),
-                fileOperations,
-            };
+            function _tryGetTextAfterUnusedImportsRemoved(
+                cloned: Program,
+                filePath: string,
+                importData: ImportData,
+                attempt: number,
+                token: CancellationToken
+            ): string | undefined {
+                throwIfCancellationRequested(token);
+
+                cloned.analyzeFile(filePath, token);
+
+                const sourceFile = cloned.getBoundSourceFile(filePath);
+                const parseResults = sourceFile?.getParseResults();
+                if (!parseResults) {
+                    return undefined;
+                }
+
+                const tracker = new TextEditTracker();
+                for (const diagnostic of cloned
+                    .getDiagnosticsForRange(
+                        filePath,
+                        convertTextRangeToRange(parseResults.parseTree, parseResults.tokenizerOutput.lines)
+                    )
+                    .filter(
+                        (d) =>
+                            d.category === DiagnosticCategory.UnusedCode &&
+                            d.getActions()?.some((a) => a.action === Commands.unusedImport)
+                    )) {
+                    const nameNode = findNodeByPosition(
+                        parseResults.parseTree,
+                        diagnostic.range.start,
+                        parseResults.tokenizerOutput.lines
+                    );
+
+                    if (nameNode?.nodeType !== ParseNodeType.Name) {
+                        continue;
+                    }
+
+                    // decl is synthesized. there is no node associated with the decl.
+                    // ex) import a or import a.b
+                    const dottedName1 =
+                        nameNode.parent?.nodeType === ParseNodeType.ModuleName ? nameNode.parent.nameParts : [nameNode];
+
+                    for (const [decl, names] of importData.declarations) {
+                        if (decl.node) {
+                            if (TextRange.containsRange(decl.node, nameNode)) {
+                                tracker.removeNodes({ node: nameNode, parseResults: parseResults });
+                                break;
+                            }
+                        }
+
+                        const dottedName2 = getDottedName(getDottedNameWithGivenNodeAsLastName(names[0]));
+                        if (dottedName2 && arrayEquals(dottedName1, dottedName2, (e1, e2) => e1.value === e2.value)) {
+                            tracker.removeNodes({ node: nameNode, parseResults: parseResults });
+                            break;
+                        }
+                    }
+                }
+
+                const oldText = sourceFile!.getFileContent()!;
+                const newText = applyTextEditsToString(
+                    tracker.getEdits(token).filter((v) => v.filePath === filePath),
+                    parseResults.tokenizerOutput.lines,
+                    oldText
+                );
+
+                // We will attempt to remove unused imports multiple times since removing 1 unused import
+                // could make another import unused. This is due to how we calculate which import is not used.
+                // ex) import os, os.path, os.path.xxx
+                // `os.path` and `os.path.xxx` will be marked as used due to `import os`.
+                // once `os` is removed `os.path` will be marked as unused and so on.
+                // We will attempt to remove those chained unused imports up to 10 chain.
+                if (attempt > 10 || oldText === newText) {
+                    return newText;
+                }
+
+                _updateFileContent(cloned, filePath, newText);
+                return _tryGetTextAfterUnusedImportsRemoved(cloned, filePath, importData, attempt + 1, token);
+            }
         });
+
+        function _updateFileContent(cloned: Program, filePath: string, text: string) {
+            const info = cloned.getSourceFileInfo(filePath);
+            const version = info ? (info.sourceFile.getClientVersion() ?? 0) + 1 : 0;
+            const chainedFilePath = info ? info.chainedSourceFile?.sourceFile.getFilePath() : undefined;
+            const ipythonMode = info ? info.sourceFile.getIPythonMode() : IPythonMode.None;
+            const isTracked = info ? info.isTracked : true;
+            const realFilePath = info ? info.sourceFile.getRealFilePath() : filePath;
+
+            cloned.setFileOpened(filePath, version, [{ text }], {
+                chainedFilePath,
+                ipythonMode,
+                isTracked,
+                realFilePath,
+            });
+        }
 
         function _getNumberOfBlankLinesToInsert(parseResults: ParseResults, position: Position) {
             // This basically try to add 2 blanks lines before previous line with text.
@@ -2300,6 +2488,42 @@ export class Program {
             // Add one more line for the line that position is on if it is not blank.
             return position.character !== 0 ? linesToAdd + 1 : linesToAdd;
         }
+    }
+
+    clone() {
+        const program = new Program(
+            this._importResolver,
+            this._configOptions,
+            this._console,
+            new LogTracker(this._console, 'Cloned')
+        );
+
+        // Cloned program will use whatever user files the program currently has.
+        const userFiles = this.getUserFiles();
+        program.setTrackedFiles(userFiles.map((i) => i.sourceFile.getFilePath()));
+        program.markAllFilesDirty(true);
+
+        // Make sure we keep editor content (open file) which could be different than one in the file system.
+        for (const fileInfo of this.getOpened()) {
+            const version = fileInfo.sourceFile.getClientVersion();
+            if (version === undefined) {
+                continue;
+            }
+
+            program.setFileOpened(
+                fileInfo.sourceFile.getFilePath(),
+                version,
+                [{ text: fileInfo.sourceFile.getOpenFileContents()! }],
+                {
+                    chainedFilePath: fileInfo.chainedSourceFile?.sourceFile.getFilePath(),
+                    ipythonMode: fileInfo.sourceFile.getIPythonMode(),
+                    isTracked: fileInfo.isTracked,
+                    realFilePath: fileInfo.sourceFile.getRealFilePath(),
+                }
+            );
+        }
+
+        return program;
     }
 
     canRenameSymbolAtPosition(
@@ -2632,6 +2856,7 @@ export class Program {
         this._createNewEvaluator();
         this._discardCachedParseResults();
         this._parsedFileCount = 0;
+        Extensions.getProgramExtensions(this.rootPath).forEach((e) => (e.clearCache ? e.clearCache() : null));
     }
 
     test_createSourceMapper(execEnv: ExecutionEnvironment, from?: SourceFileInfo) {
@@ -2684,12 +2909,11 @@ export class Program {
         token: CancellationToken
     ) {
         const execEnv = this._configOptions.findExecEnvironment(filePath);
-        const referencesResult = sourceFileInfo.sourceFile.getDeclarationForPosition(
-            this._createSourceMapper(execEnv, token),
+        const referencesResult = this._getDeclarationForPosition(
+            sourceFileInfo,
             position,
-            this._evaluator!,
-            undefined,
             DocumentSymbolCollectorUseCase.Rename,
+            this._createSourceMapper(execEnv, token),
             token
         );
 
@@ -2713,6 +2937,25 @@ export class Program {
             referencesResult.symbolNames,
             referencesResult.nonImportDeclarations,
             referencesResult.useCase
+        );
+    }
+
+    private _getDeclarationForPosition(
+        sourceFileInfo: SourceFileInfo,
+        position: Position,
+        useCase: DocumentSymbolCollectorUseCase,
+        sourceMapper: SourceMapper,
+        token: CancellationToken,
+        reporter?: ReferenceCallback
+    ) {
+        return sourceFileInfo.sourceFile.getDeclarationForPosition(
+            sourceMapper,
+            position,
+            this._evaluator!,
+            reporter,
+            useCase,
+            token,
+            Array.from(collectImportedByFiles(sourceFileInfo)).map((fileInfo) => fileInfo.sourceFile)
         );
     }
 
@@ -2939,11 +3182,9 @@ export class Program {
             (stubFilePath: string, implFilePath: string) => {
                 let stubFileInfo = this.getSourceFileInfo(stubFilePath);
                 if (!stubFileInfo) {
-                    // Special case for import statement.
-                    // ex) import X.Y
-                    // SourceFile for X might not be in memory since import `X.Y` only brings in Y
-                    stubFileInfo = this._createInterimFileInfo(stubFilePath);
-                    this._addToSourceFileListAndMap(stubFileInfo);
+                    // Special case for import statement like "import X.Y". The SourceFile
+                    // for X might not be in memory since import `X.Y` only brings in Y.
+                    stubFileInfo = this.addInterimFile(stubFilePath);
                 }
 
                 this._addShadowedFile(stubFileInfo, implFilePath);
@@ -2952,15 +3193,13 @@ export class Program {
             (f) => {
                 let fileInfo = this.getBoundSourceFileInfo(f);
                 if (!fileInfo) {
-                    // Special case for import statement.
-                    // ex) import X.Y
-                    // SourceFile for X might not be in memory since import `X.Y` only brings in Y
-                    fileInfo = this._createInterimFileInfo(f);
-                    this._addToSourceFileListAndMap(fileInfo);
+                    // Special case for import statement like "import X.Y". The SourceFile
+                    // for X might not be in memory since import `X.Y` only brings in Y.
+                    fileInfo = this.addInterimFile(f);
 
                     // Even though this file is not referenced by anything, make sure
-                    // we have parse tree for doc string.
-                    fileInfo.sourceFile.parse(this._configOptions, this._importResolver);
+                    // we have a parse tree for the doc string.
+                    this._parseFile(fileInfo, /* content */ undefined, /* force */ true);
                 }
 
                 return fileInfo;
@@ -3180,10 +3419,8 @@ export class Program {
             if (!updatedImportMap.has(normalizedImportPath)) {
                 // We found a new import to add. See if it's already part
                 // of the program.
-                let importedFileInfo: SourceFileInfo;
-                if (this.getSourceFileInfo(importInfo.path)) {
-                    importedFileInfo = this.getSourceFileInfo(importInfo.path)!;
-                } else {
+                let importedFileInfo = this.getSourceFileInfo(importInfo.path);
+                if (!importedFileInfo) {
                     const importName = this._getImportNameForFile(importInfo.path);
                     const sourceFile = new SourceFile(
                         this._fs,

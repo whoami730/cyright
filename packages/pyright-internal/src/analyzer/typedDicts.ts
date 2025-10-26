@@ -18,6 +18,7 @@ import { Localizer } from '../localization/localize';
 import {
     ArgumentCategory,
     ClassNode,
+    DictionaryNode,
     ExpressionNode,
     IndexNode,
     ParameterCategory,
@@ -27,12 +28,8 @@ import { KeywordType } from '../parser/tokenizerTypes';
 import * as AnalyzerNodeInfo from './analyzerNodeInfo';
 import { DeclarationType, VariableDeclaration } from './declaration';
 import * as ParseTreeUtils from './parseTreeUtils';
-import { Symbol, SymbolFlags } from './symbol';
-import {
-    getLastTypedDeclaredForSymbol,
-    isNotRequiredTypedDictVariable,
-    isRequiredTypedDictVariable,
-} from './symbolUtils';
+import { Symbol, SymbolFlags, SymbolTable } from './symbol';
+import { getLastTypedDeclaredForSymbol } from './symbolUtils';
 import { EvaluatorUsage, FunctionArgument, TypeEvaluator, TypeResult, TypeResultWithNode } from './typeEvaluatorTypes';
 import {
     AnyType,
@@ -65,6 +62,7 @@ import {
     isLiteralType,
     mapSubtypes,
     partiallySpecializeType,
+    specializeTupleClass,
 } from './typeUtils';
 import { TypeVarContext } from './typeVarContext';
 
@@ -120,7 +118,6 @@ export function createTypedDictType(
         evaluator.addError(Localizer.Diagnostic.typedDictSecondArgDict(), errorNode);
     } else {
         const entriesArg = argList[1];
-        const entrySet = new Set<string>();
 
         if (
             entriesArg.argumentCategory === ArgumentCategory.Simple &&
@@ -128,65 +125,10 @@ export function createTypedDictType(
             entriesArg.valueExpression.nodeType === ParseNodeType.Dictionary
         ) {
             usingDictSyntax = true;
-            const entryDict = entriesArg.valueExpression;
 
-            entryDict.entries.forEach((entry) => {
-                if (entry.nodeType !== ParseNodeType.DictionaryKeyEntry) {
-                    evaluator.addError(Localizer.Diagnostic.typedDictSecondArgDictEntry(), entry);
-                    return;
-                }
-
-                if (entry.keyExpression.nodeType !== ParseNodeType.StringList) {
-                    evaluator.addError(Localizer.Diagnostic.typedDictEntryName(), entry.keyExpression);
-                    return;
-                }
-
-                const entryName = entry.keyExpression.strings.map((s) => s.value).join('');
-                if (!entryName) {
-                    evaluator.addError(Localizer.Diagnostic.typedDictEmptyName(), entry.keyExpression);
-                    return;
-                }
-
-                if (entrySet.has(entryName)) {
-                    evaluator.addError(Localizer.Diagnostic.typedDictEntryUnique(), entry.keyExpression);
-                    return;
-                }
-
-                // Record names in a set to detect duplicates.
-                entrySet.add(entryName);
-
-                // Cache the annotation type.
-                const annotatedType = evaluator.getTypeOfExpressionExpectingType(entry.valueExpression, {
-                    allowFinal: true,
-                    allowRequired: true,
-                });
-
-                const newSymbol = new Symbol(SymbolFlags.InstanceMember);
-                const declaration: VariableDeclaration = {
-                    type: DeclarationType.Variable,
-                    node: entry.keyExpression,
-                    path: fileInfo.filePath,
-                    typeAnnotationNode: entry.valueExpression,
-                    isRequired: annotatedType.isRequired,
-                    isNotRequired: annotatedType.isNotRequired,
-                    isRuntimeTypeExpression: true,
-                    range: convertOffsetsToRange(
-                        entry.keyExpression.start,
-                        TextRange.getEnd(entry.keyExpression),
-                        fileInfo.lines
-                    ),
-                    moduleName: fileInfo.moduleName,
-                    isInExceptSuite: false,
-                };
-                newSymbol.addDeclaration(declaration);
-
-                classFields.set(entryName, newSymbol);
-            });
-
-            // Set the type in the type cache for the dict node so it doesn't
-            // get evaluated again.
-            evaluator.setTypeForNode(entryDict);
+            getTypedDictFieldsFromDictSyntax(evaluator, entriesArg.valueExpression, classFields);
         } else if (entriesArg.name) {
+            const entrySet = new Set<string>();
             for (let i = 1; i < argList.length; i++) {
                 const entry = argList[i];
                 if (!entry.name || !entry.valueExpression) {
@@ -201,13 +143,6 @@ export function createTypedDictType(
                 // Record names in a map to detect duplicates.
                 entrySet.add(entry.name.value);
 
-                // Evaluate the type with specific evaluation flags. The
-                // type will be cached for later.
-                const annotatedType = evaluator.getTypeOfExpressionExpectingType(entry.valueExpression, {
-                    allowFinal: true,
-                    allowRequired: true,
-                });
-
                 const newSymbol = new Symbol(SymbolFlags.InstanceMember);
                 const fileInfo = AnalyzerNodeInfo.getFileInfo(errorNode);
                 const declaration: VariableDeclaration = {
@@ -215,8 +150,6 @@ export function createTypedDictType(
                     node: entry.name,
                     path: fileInfo.filePath,
                     typeAnnotationNode: entry.valueExpression,
-                    isRequired: annotatedType.isRequired,
-                    isNotRequired: annotatedType.isNotRequired,
                     isRuntimeTypeExpression: true,
                     range: convertOffsetsToRange(
                         entry.name.start,
@@ -263,6 +196,34 @@ export function createTypedDictType(
     return classType;
 }
 
+// Creates a new anonymous TypedDict class from an inlined dict[{}] type annotation.
+export function createTypedDictTypeInlined(
+    evaluator: TypeEvaluator,
+    dictNode: DictionaryNode,
+    typedDictClass: ClassType
+): ClassType {
+    const fileInfo = AnalyzerNodeInfo.getFileInfo(dictNode);
+    const className = '<TypedDict>';
+
+    const classType = ClassType.createInstantiable(
+        className,
+        ParseTreeUtils.getClassFullName(dictNode, fileInfo.moduleName, className),
+        fileInfo.moduleName,
+        fileInfo.filePath,
+        ClassTypeFlags.TypedDictClass,
+        ParseTreeUtils.getTypeSourceId(dictNode),
+        /* declaredMetaclass */ undefined,
+        typedDictClass.details.effectiveMetaclass
+    );
+    classType.details.baseClasses.push(typedDictClass);
+    computeMroLinearization(classType);
+
+    getTypedDictFieldsFromDictSyntax(evaluator, dictNode, classType.details.fields);
+    synthesizeTypedDictClassMethods(evaluator, dictNode, classType, /* isClassFinal */ true);
+
+    return classType;
+}
+
 export function synthesizeTypedDictClassMethods(
     evaluator: TypeEvaluator,
     node: ClassNode | ExpressionNode,
@@ -300,6 +261,7 @@ export function synthesizeTypedDictClassMethods(
     });
 
     const entries = getTypedDictMembersForClass(evaluator, classType);
+    let allEntriesAreNotRequired = true;
     entries.forEach((entry, name) => {
         FunctionType.addParameter(initType, {
             category: ParameterCategory.Simple,
@@ -308,6 +270,10 @@ export function synthesizeTypedDictClassMethods(
             type: entry.valueType,
             hasDeclaredType: true,
         });
+
+        if (entry.isRequired) {
+            allEntriesAreNotRequired = false;
+        }
     });
 
     const symbolTable = classType.details.fields;
@@ -543,6 +509,33 @@ export function synthesizeTypedDictClassMethods(
             );
         }
         symbolTable.set('__delitem__', Symbol.createWithType(SymbolFlags.ClassMember, createDelItemMethod(strType)));
+
+        // If the TypedDict is final and all of its entries are NotRequired,
+        // add a "clear" and "popitem" method.
+        if (isClassFinal && allEntriesAreNotRequired) {
+            const clearMethod = FunctionType.createSynthesizedInstance('clear');
+            FunctionType.addParameter(clearMethod, selfParam);
+            clearMethod.details.declaredReturnType = NoneType.createInstance();
+            symbolTable.set('clear', Symbol.createWithType(SymbolFlags.ClassMember, clearMethod));
+
+            const popItemMethod = FunctionType.createSynthesizedInstance('popitem');
+            FunctionType.addParameter(popItemMethod, selfParam);
+            let tupleType = evaluator.getTupleClassType();
+            if (tupleType && isInstantiableClass(tupleType)) {
+                tupleType = specializeTupleClass(
+                    ClassType.cloneAsInstance(tupleType),
+                    [
+                        { type: strType, isUnbounded: false },
+                        { type: UnknownType.create(), isUnbounded: false },
+                    ],
+                    /* isTypeArgumentExplicit */ true
+                );
+            } else {
+                tupleType = UnknownType.create();
+            }
+            popItemMethod.details.declaredReturnType = tupleType;
+            symbolTable.set('popitem', Symbol.createWithType(SymbolFlags.ClassMember, popItemMethod));
+        }
     }
 }
 
@@ -578,6 +571,64 @@ export function getTypedDictMembersForClass(evaluator: TypeEvaluator, classType:
     return entries;
 }
 
+function getTypedDictFieldsFromDictSyntax(
+    evaluator: TypeEvaluator,
+    entryDict: DictionaryNode,
+    classFields: SymbolTable
+) {
+    const entrySet = new Set<string>();
+    const fileInfo = AnalyzerNodeInfo.getFileInfo(entryDict);
+
+    entryDict.entries.forEach((entry) => {
+        if (entry.nodeType !== ParseNodeType.DictionaryKeyEntry) {
+            evaluator.addError(Localizer.Diagnostic.typedDictSecondArgDictEntry(), entry);
+            return;
+        }
+
+        if (entry.keyExpression.nodeType !== ParseNodeType.StringList) {
+            evaluator.addError(Localizer.Diagnostic.typedDictEntryName(), entry.keyExpression);
+            return;
+        }
+
+        const entryName = entry.keyExpression.strings.map((s) => s.value).join('');
+        if (!entryName) {
+            evaluator.addError(Localizer.Diagnostic.typedDictEmptyName(), entry.keyExpression);
+            return;
+        }
+
+        if (entrySet.has(entryName)) {
+            evaluator.addError(Localizer.Diagnostic.typedDictEntryUnique(), entry.keyExpression);
+            return;
+        }
+
+        // Record names in a set to detect duplicates.
+        entrySet.add(entryName);
+
+        const newSymbol = new Symbol(SymbolFlags.InstanceMember);
+        const declaration: VariableDeclaration = {
+            type: DeclarationType.Variable,
+            node: entry.keyExpression,
+            path: fileInfo.filePath,
+            typeAnnotationNode: entry.valueExpression,
+            isRuntimeTypeExpression: true,
+            range: convertOffsetsToRange(
+                entry.keyExpression.start,
+                TextRange.getEnd(entry.keyExpression),
+                fileInfo.lines
+            ),
+            moduleName: fileInfo.moduleName,
+            isInExceptSuite: false,
+        };
+        newSymbol.addDeclaration(declaration);
+
+        classFields.set(entryName, newSymbol);
+    });
+
+    // Set the type in the type cache for the dict node so it doesn't
+    // get evaluated again.
+    evaluator.setTypeForNode(entryDict);
+}
+
 function getTypedDictMembersForClassRecursive(
     evaluator: TypeEvaluator,
     classType: ClassType,
@@ -611,9 +662,9 @@ function getTypedDictMembersForClassRecursive(
 
                 let isRequired = !ClassType.isCanOmitDictValues(classType);
 
-                if (isRequiredTypedDictVariable(symbol)) {
+                if (isRequiredTypedDictVariable(evaluator, symbol)) {
                     isRequired = true;
-                } else if (isNotRequiredTypedDictVariable(symbol)) {
+                } else if (isNotRequiredTypedDictVariable(evaluator, symbol)) {
                     isRequired = false;
                 }
 
@@ -985,4 +1036,34 @@ export function narrowForKeyAssignment(classType: ClassType, key: string) {
     narrowedEntries.set(key, { isProvided: true, isRequired: false, valueType: tdEntry.valueType });
 
     return ClassType.cloneForNarrowedTypedDictEntries(classType, narrowedEntries);
+}
+
+function isRequiredTypedDictVariable(evaluator: TypeEvaluator, symbol: Symbol) {
+    return symbol.getDeclarations().some((decl) => {
+        if (decl.type !== DeclarationType.Variable || !decl.typeAnnotationNode) {
+            return false;
+        }
+
+        const annotatedType = evaluator.getTypeOfExpressionExpectingType(decl.typeAnnotationNode, {
+            allowFinal: true,
+            allowRequired: true,
+        });
+
+        return !!annotatedType.isRequired;
+    });
+}
+
+function isNotRequiredTypedDictVariable(evaluator: TypeEvaluator, symbol: Symbol) {
+    return symbol.getDeclarations().some((decl) => {
+        if (decl.type !== DeclarationType.Variable || !decl.typeAnnotationNode) {
+            return false;
+        }
+
+        const annotatedType = evaluator.getTypeOfExpressionExpectingType(decl.typeAnnotationNode, {
+            allowFinal: true,
+            allowRequired: true,
+        });
+
+        return !!annotatedType.isNotRequired;
+    });
 }
