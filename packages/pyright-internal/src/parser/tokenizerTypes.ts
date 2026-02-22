@@ -167,6 +167,7 @@ export const enum KeywordType {
     Const,
     Readonly,
     Public,
+    Api,
     Signed,
     Unsigned,
     Long,
@@ -196,6 +197,7 @@ export const varModifiers = [
     KeywordType.Readonly,
     KeywordType.Inline,
     KeywordType.Public,
+    KeywordType.Api,
     KeywordType.Volatile,
 ];
 
@@ -218,6 +220,7 @@ export const softKeywords = [
     KeywordType.Const,
     KeywordType.Readonly,
     KeywordType.Public,
+    KeywordType.Api,
     KeywordType.Signed,
     KeywordType.Unsigned,
     KeywordType.Long,

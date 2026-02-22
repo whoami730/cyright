@@ -102,6 +102,7 @@ const _keywords: Map<string, KeywordType> = new Map([
     ['const', KeywordType.Const],
     ['readonly', KeywordType.Readonly],
     ['public', KeywordType.Public],
+    ['api', KeywordType.Api],
     ['signed', KeywordType.Signed],
     ['unsigned', KeywordType.Unsigned],
     ['long', KeywordType.Long],

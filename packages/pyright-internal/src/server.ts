@@ -226,7 +226,14 @@ export class PyrightServer extends LanguageServerBase {
                     });
                     serverSettings.includePaths = cythonPaths;
                 }
+                if (cythonSection.typeCheckingMode !== undefined && isString(cythonSection.typeCheckingMode)) {
+                    serverSettings.typeCheckingMode = cythonSection.typeCheckingMode;
+                }
             }
+
+            // ! Cython: use minimal diagnostics for .pyx/.pxd to avoid false positives
+            // (missing imports, undefined vars from cimports/C types). Set cython.typeCheckingMode to override.
+            serverSettings.typeCheckingMode = serverSettings.typeCheckingMode ?? 'cython';
         } catch (error) {
             this.console.error(`Error reading settings: ${error}`);
         }

@@ -174,6 +174,7 @@ namespace Keywords {
         'const',
         'readonly',
         'public',
+        'api',
         'signed',
         'unsigned',
         'long',
