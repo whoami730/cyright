@@ -6,6 +6,7 @@
 import assert from 'assert';
 import * as path from 'path';
 
+import { ConfigOptions } from '../../common/configOptions';
 import { DiagnosticCategory } from '../../common/diagnostic';
 import * as TestUtils from '../../tests/testUtils';
 
@@ -187,6 +188,9 @@ export function sampleFile(filename: string) {
 export function runDiagnosticTest(fileName: string) {
     const content = TestUtils.readSampleFile(sampleFile(fileName));
     const expected = extractInlineExpectations(content);
-    const results = TestUtils.typeAnalyzeSampleFiles([sampleFile(fileName)])
+    const configOptions = new ConfigOptions('.');
+    // So `cimport` / `from … cimport` resolve `.pxd` next to samples (portable across machines).
+    configOptions.includePaths = [path.resolve(__dirname, 'samples')];
+    const results = TestUtils.typeAnalyzeSampleFiles([sampleFile(fileName)], configOptions);
     validateInlineResults(results, expected);
 }

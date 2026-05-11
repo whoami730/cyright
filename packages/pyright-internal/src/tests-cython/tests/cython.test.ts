@@ -96,6 +96,10 @@ test('new_keyword.pyx', () => {
     runDiagnosticTest('new_keyword.pyx');
 });
 
+test('api_keyword.pyx', () => {
+    runDiagnosticTest('api_keyword.pyx');
+});
+
 test('type_as_class.pyx', () => {
     runDiagnosticTest('type_as_class.pyx');
 });

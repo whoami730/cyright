@@ -1,6 +1,6 @@
-cimport libc.math # expect-unused: "libc.math" is not accessed
-from libc.math cimport sinf
-from libc.math cimport cosf as func
+cimport import_stub # expect-unused: "import_stub" is not accessed
+from import_stub cimport sinf
+from import_stub cimport cosf as func
 
 a = sinf
 b = func
