@@ -500,6 +500,17 @@ export function getOffDiagnosticRuleSet(): DiagnosticRuleSet {
     return diagSettings;
 }
 
+/** Cython: minimal diagnostics — only syntax/parse errors. Suppresses import and undefined-variable noise for .pyx/.pxd. */
+export function getCythonDiagnosticRuleSet(): DiagnosticRuleSet {
+    const diagSettings: DiagnosticRuleSet = {
+        ...getOffDiagnosticRuleSet(),
+        reportMissingImports: 'none',
+        reportMissingModuleSource: 'none',
+        reportUndefinedVariable: 'none',
+    };
+    return diagSettings;
+}
+
 export function getBasicDiagnosticRuleSet(): DiagnosticRuleSet {
     const diagSettings: DiagnosticRuleSet = {
         printUnknownAsAny: false,
@@ -816,6 +827,10 @@ export class ConfigOptions {
 
         if (typeCheckingMode === 'off') {
             return getOffDiagnosticRuleSet();
+        }
+
+        if (typeCheckingMode === 'cython') {
+            return getCythonDiagnosticRuleSet();
         }
 
         return getBasicDiagnosticRuleSet();

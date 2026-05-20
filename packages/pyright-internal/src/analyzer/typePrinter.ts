@@ -1118,6 +1118,9 @@ function printTypeWithCythonDetails(type: Type, objName: string) {
         if (details.isPublic) {
             prefixes.push('public');
         }
+        if (details.isApi) {
+            prefixes.push('api');
+        }
         if (details.isConst) {
             prefixes.push('const');
         }
